@@ -644,8 +644,26 @@ fires only when the backbone is genuinely unusable.
 measured: 6 distinct atom names, 1428 atoms for a 119-residue C2. That is fine for
 a backbone look and for redesign, but it is **not an all-atom structure**: anything
 that counts atoms, packs side chains or computes buried area will be misled. Pass
-`--use-orig-coords` for the real atoms (measured: 83 atom names, 3752 atoms on the
-same dock). Residue numbering in the dump is **1..N per chain**, not the input's.
+`--use-orig-coords` for the real atoms. Residue numbering in the dump is
+**1..N per chain**, not the input's.
+
+> #### How to tell whether `--use-orig-coords` actually took
+>
+> **Use atoms per residue and the `CEN` count. Do NOT use a distinct-atom-name
+> count** — an earlier revision of this page claimed "83 atom names, 3752 atoms"
+> for an all-atom dump, and that is wrong. 3752 atoms over 238 residues is ~15.8
+> per residue, which is only reachable if **hydrogens** were counted; these dumps
+> carry none. ~35 is the correct number of distinct heavy-atom names across the 20
+> amino acids, so the name count barely moves and is **not diagnostic**.
+>
+> | | atoms/residue | `CEN` count |
+> | --- | --- | --- |
+> | backbone-only (default) | **~5** (N CA C O CB) | one per residue |
+> | `--use-orig-coords` | **~8.4** (real side chains) | **0** |
+>
+> *Measured 2026-10-02* on `outputs/20261002_143419_dimer_phase2`: a 111-residue
+> C2 dump gave 1832 ATOM records over 222 residues = **8.25 atoms/residue, 0 `CEN`**.
+> A distinct-name count on the same file gave 35, not 83.
 
 ### Cages and dihedrals are **not verified end to end**
 Cyclic (`C2`, `C3`) is verified in the real image, start to finish. The
