@@ -52,6 +52,7 @@ Every tool leaf-prefixes its columns and writes `<leaf>_status`; `OK` is the onl
 | **pyrosetta** | "Is it well packed, and what does the interface cost?" ref2015 after an optional FastRelax. | `boltz_path` | `total_score`, `score_per_res`, `score_raw`, `relax_ca_rmsd`, every weighted term, `sasa`, `sasa_hydrophobic`, `packstat`, `buried_unsat`, `dssp`, `if_dG`/`if_dSASA`/`if_hbonds`/`if_delta_unsat` | `pyrosetta` |
 | **cms** | "How much real interface is there, and does it fit?" Contact molecular surface + shape complementarity, GPU. | no default — name the structure column | `target`, `binder`, `sc`, `sc_area`, `sc_median_dist`, `n_atoms_binder/_target`, `path` (**per-residue CMS: the epitope map**) | `cms` |
 | **ringfit** | "Does the binder straddle two protomers, and would it clash with the rest of the assembly or its lipid belt?" (Very specific, you will almost never need it) | `rfdiffusion3_path` + `--ref-structure` | `align_rmsd`, `seq_match_frac`, `resnum_offset`, `bsa_t1/t2/total`, `bridge_ratio`, `hotspot_recall`, `n_clash`, `min_dist_ring`, `lipid_clash`, `path` | `ringfit` |
+| **ifacegeom** | "**Which residues** are the epitope, and where are the termini relative to it?" The interface residue lists on **both** sides, as columns that ride lineage — plus the target-side histidine count and a signed C-/N-terminus projection. CPU-only, milliseconds per design. | no default — name the **complex** structure column | `binder_res` (**the epitope, `A:12,A:15,…`**), `n_binder_res`, `binder_res_seq`, `target_res`, `target_his`/`n_target_his`, `binder_com`, `binder_iface_com`, `iface_com`, `axis_len`, `nterm_res`/`cterm_res`, `cterm_proj`/`nterm_proj` (**signed; >0 = interface side**), `cterm_iface_dist`/`_min_dist`, `binder_len`, `path` (**per-residue evidence**) | `ifacegeom` |
 
 ## Question → tool
 
@@ -67,7 +68,9 @@ Every tool leaf-prefixes its columns and writes `<leaf>_status`; `OK` is the onl
 | Did the binder *stay put*, not just fold | `chainsel` the binder out, then `usalign` **in the target frame** — a separate question from fold, see `binder-campaign` |
 | Did the target land under a forced template | `usalign` predicted target chains vs. the template. **This gate comes first.** |
 | How big and how good is the interface | `cms` (`target`, `sc`), `pyrosetta` (`if_dG`, `if_dSASA`) |
-| Which epitope residues does it actually cover | `cms` → `cms_path`, the per-residue table |
+| Which epitope residues does it actually cover | `ifacegeom` (`binder_res` / `target_res` — **as columns**, so they ride lineage into later tables), or `cms` → `cms_path` for a per-residue area table you cannot filter on |
+| Does the target epitope contain histidines (pH sensitivity) | `ifacegeom` (`target_his`, `n_target_his`) |
+| Where is the C-terminus relative to the binding face | `ifacegeom` (`cterm_proj` — signed, >0 = interface side; `cterm_iface_min_dist`) |
 | Is it well packed / any buried unsats | `pyrosetta` (`packstat`, `buried_unsat`, `score_per_res`) |
 | Does it bridge two protomers of an oligomer | `ringfit` (`bridge_ratio`, `hotspot_recall`) |
 | Would it clash with the rest of the assembly | `ringfit` (`n_clash`, `min_dist_ring`, `lipid_clash`) |
@@ -90,7 +93,8 @@ The commonest silent failure in this workspace is a tool reading the wrong colum
 | bindcraft2 | chainsel / cms / usalign | `-i bindcraft2_path` — it is the **complex**, so `chainsel` the binder out first |
 | proteinmpnn, binder campaign | boltz / af3 | `mkcomplex` first, then `-i mkcomplex_sequence` |
 | boltz, binder | usalign / cms | `chainsel` first, then the `chainsel_path` it wrote |
-| anything | cms / chainsel | no default at all — you must name the column |
+| anything | cms / chainsel / ifacegeom | no default at all — you must name the column. `ifacegeom` needs the **complex** (binder + target in one file); a monomer has no interface |
+| ifacegeom | chainsel / rpxdock / a later graft | nothing — its columns ride lineage. But `ifacegeom_binder_res` is in **this file's numbering**, and `chainsel`/`rpxdock` both renumber; the consumer does the remapping, not `ifacegeom` |
 | anything | usalign | `--col-a` / `--col-b`, **not** `-i` |
 
 Two structure columns exist for every predicted design: the **backbone** it was designed as (`rfdiffusion3_path`, in the parent table) and the **prediction** (`boltz_path`, in this one). Lineage resolves the parent for you; say which you mean.

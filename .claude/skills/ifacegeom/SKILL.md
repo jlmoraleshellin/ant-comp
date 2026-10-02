@@ -1,7 +1,6 @@
 ---
 name: ifacegeom
-description: >-
-  Records a binder's interface footprint on its target (the epitope residue list, a column that survives lineage), the target-side histidine count, and where the binder's N- and C-termini sit relative to the interface. Load before composing an ifacegeom run or interpreting its columns. Traps: the vector selection method is the default for a reason, chain selection is easy to get wrong, and every downstream tool parses the residue-label format.
+description: How to run the custom ifacegeom tool — recording a binder's interface footprint on its target (the epitope residue list, as a column that survives lineage), the target-side histidine count, and where the binder's N- and C-termini sit relative to that interface. Covers the two selection methods and why the vector one is the default, the chain-selection trap, the residue-label format every downstream tool parses, and every column it collects. Load before composing an ifacegeom run or interpreting its columns.
 ---
 
 # ifacegeom
@@ -177,27 +176,6 @@ every design.
 whose contacts change with pH, which the strategy would rather avoid — but the pool
 is inherited and finite, so exclude nothing before seeing the distribution.
 
-## The inherited hEGFR pool — facts you need before running it there
-
-Measured on `sapia-runs-toon:inputs/bc2_output_for_anthony/` (run
-`outputs/20261002_143419_dimer_phase2`):
-
-- **The binder is chain B; the target is chain A.** The opposite of this tool's
-  default. Pass `--binder-chains B --target-chains A` or every number is wrong.
-  The filename's `l<N>` is the binder length, and it matches `ifacegeom_binder_len`
-  on all 37 designs.
-- **Chain A is human EGFR 311–503, renumbered 1–193.** The mapping is
-  `local resnum = human EGFR resnum − 310`, verified by the residue identity of all
-  five design-document hotspots (L325→A:15 L, P349→A:39 P, F412→A:102 F,
-  V417→A:107 V, I467→A:157 I). `ifacegeom_target_res` is in **local** numbering;
-  add 310 before comparing to anything written in EGFR numbering.
-- **Use the top-level `*_hEGFR.cif`, not `renum/`.** `renum/` differs only in that
-  the binder chain continues the target's numbering (B:194… rather than B:1…); the
-  target numbering is identical, and per-chain numbering is what `chainsel`/`rpxdock`
-  expect downstream.
-- Each design has a paired `*_mEGFR.cif`. Measuring the mouse complexes is a second
-  `ifacegeom` run — seed them as their own rows, or use `-l` on a second table.
-
 ## Verification done
 
 On barnase/barstar (1BRS, chains D=binder / A=target), checked against the
@@ -214,27 +192,3 @@ literature and against brute-force computation written independently of the tool
   C-terminus projects positive and the N-terminus negative.
 - Absent chain, same chain on both sides, and a missing file each give an `error:`
   status with every metric NA, and the task still exits 0.
-
-## Verified on real data (Modal)
-
-`outputs/20261002_143419_dimer_phase2` on `sapia-runs-toon`, 37 inherited
-BindCraft2 hEGFR complexes, one batched task, **37/37 `OK`**, empty stderr:
-
-> **Cite a run_dir that still exists.** This section previously cited
-> `outputs/20261002_140341_ifacegeom_hegfr_test`, which was deleted before the
-> campaign proper began. The numbers were genuine and reproduced exactly in the
-> run above — but for a while this page asserted results nobody could re-read,
-> and a campaign decision was nearly taken on them. **A commit message is not a
-> measurement.** If the run backing this section is ever cleaned up, re-point
-> this section or delete the claim.
-
-- `ifacegeom_binder_len` matched the `l<N>` parsed from every filename (37/37) — an
-  invariant the tool did not compute.
-- **All five design-document hotspots are contacted by 37/37 binders**
-  (L325, P349, F412, V417, I467). The epitope the tool finds is exactly the one
-  BindCraft2 was aimed at — independent evidence that the selection is right.
-- The whole pool contacts **His409** (37/37) and most of it **His346** (29/37), so
-  **0/37 have a histidine-free target epitope**. His409 sits two residues from the
-  F412 hotspot, i.e. the intended hydrophobic patch has a histidine built into it.
-  This is the §1.1 "record, don't filter" principle earning its keep: filtering on
-  histidine-free up front would have emptied the pool at step 1.
