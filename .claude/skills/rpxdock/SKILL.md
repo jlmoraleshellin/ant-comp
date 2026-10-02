@@ -166,32 +166,42 @@ here. Do not inherit `afilmv_ehl` just because this section exists.
 
 ### ⚠ Operational consequences of `afilmv_ehl`
 
-**Memory.** 5.70 GB against `ilv_h`'s 365 MB — about **15.6×**. The image's default
-resources are `cpu 4 / memory 16G`, and the memory has to hold the **decompressed**
-tables. **Raise `--mem` well above 16G.** *The right value has NOT been measured
-here* — the `--mem 64G` used in the example below is a **starting guess, explicitly
-not a verified number**. Pick the real value from the timing probe, do not guess it
-into a large batch.
+**Memory: `--mem 64G` is verified sufficient**, for one scaffold, both with and
+without the pickles. The image default is `cpu 4 / memory 16G` and the memory must
+hold the **decompressed** tables, so 16G is not enough — always pass `--mem`.
+Peak RSS was never measured, so whether something lower than 64G would do is
+unknown; 96G was used for the one-off pickle generation and also sufficed.
 
-**Table-load time will dominate, and may be very large.** Measured with `ilv_h`:
-`rpxdock_hscore_seconds` was **33–49 s of a 58–75 s** total dock — the load was
-already **52–64 % of the runtime**, on the small table. Extrapolating by size,
-`afilmv_ehl` could plausibly take **several minutes to load, per task**, and that
-cost is paid by **every container** (one scaffold per task; nothing is amortised).
+**Table-load time dominates — but the pickles cut it ~3×. All measured, same
+scaffold (`denovo_diff_0`, 100 res, C2), same flags, `--mem 64G`:**
 
-> **This is an EXTRAPOLATION, not a measurement.** The first `afilmv_ehl` run must
-> be a **single-design timing probe** — one scaffold, read back
-> `rpxdock_hscore_seconds` and `rpxdock_seconds` — **before any fan-out**, and
-> before `--mem` and `-T` are chosen for a batch.
+| | `ilv_h` (tarball) | `afilmv_ehl` tarball | `afilmv_ehl` **pickle** |
+| --- | --- | --- | --- |
+| `hscore_seconds` (load) | 30.5 s | **617.6 s** | **199.2 s** |
+| total `seconds` | 64.0 s | 655.1 s | **236.9 s** |
+| search (total − load) | 33.5 s | 37.4 s | 37.7 s |
+| load as % of runtime | 48 % | **94 %** | 84 % |
+
+* **The pickles are 3.10× faster to load and 2.76× faster end to end.** The search
+  itself is untouched (37.4 → 37.7 s) — every saving is in the load, as expected.
+* Loading scaled **20.2×** between `ilv_h` and `afilmv_ehl` tarballs, slightly
+  *worse* than their 15.6× size ratio.
+* The cost is still paid by **every container** (one scaffold per task; nothing is
+  amortised). For a 20-design batch that is **1.1 h of table loading with pickles,
+  against 3.4 h without.**
+* **Correctness was verified, not assumed:** the pickle run reproduced the tarball
+  run **bit-identically** — `score` 109.62184143066406, `rpx` 107.7418441772461,
+  `ncontact` 188, `n_docks` 138. rpxdock is deterministic, so any drift there would
+  have meant the pickles were not equivalent.
 
 **Re-baseline every timing rule.** Any "a dock should finish in under N minutes"
-guidance in this workspace — including the 10-minute figure used to recognise the
-multi-chain hang below — was set against **`ilv_h`** timings. Under `afilmv_ehl` a
-healthy task may sit for minutes **loading tables**, which looks exactly like a
-hang. Distinguish them by the evidence table in that trap (an `.err` that has
-printed the `using hscore …` line and nothing further, plus an empty design dir, is
-ambiguous until you know the load time) — which is another reason to measure the
-probe first.
+guidance — including the 10-minute figure used to recognise the multi-chain hang
+below — was set against **`ilv_h`**. Under `afilmv_ehl` a **healthy** task spends
+**~200 s (pickles) or ~620 s (tarballs) loading before docking starts**, which looks
+exactly like a hang. Distinguish them with the evidence table in that trap: an
+`.err` showing the `using hscore …` line and nothing further, with an empty design
+dir, is **normal** for the first few minutes. A fresh alias or a changed `--mem`
+deserves a single-design probe before any fan-out.
 
 ### Scores from two aliases must never be compared
 
@@ -282,12 +292,73 @@ repopulates it. Three lowercase alias directories:
 
 | Alias | Size | Contents | Note |
 | --- | --- | --- | --- |
-| `ilv_h` | ~365 MB | ILV residues, **helix pairs only**, SS-**in**dependent | the tool default. Correct only for **all-helical** designs |
-| `ailv_h` | **~1.4 GB** | adds Ala, SS-independent | **do not use, untested** — `.txz.pickle` sidecars, see below and the alias section |
-| `afilmv_ehl` | **5.70 GB** | all SS types, SS-**dependent** | **this campaign's alias.** Raise `--mem` well above 16G; expect a long per-task table load |
+| `ilv_h` | 348 MiB, `.txz` only | ILV residues, **helix pairs only**, SS-**in**dependent | the tool default. Correct only for **all-helical** designs. Not pickled |
+| `ailv_h` | **1.30 GiB** (453 MiB `.txz` + 879 MiB `.txz.pickle`) | adds Ala, SS-independent | **do not use, untested** — its sidecars came from an unknown stack and may carry the base-pickle defect below |
+| `afilmv_ehl` | **14.55 GiB** (5.31 GiB `.txz` + 9.24 GiB `.pickle`) | all SS types, SS-**dependent** | **this campaign's alias. PICKLED 2026-10-02** — loads in **199 s**, was 618 s. `--mem 64G` verified |
 
 **Which one to pass is a campaign decision, not a default** — see
 [Choosing the hscore alias](#choosing-the-hscore-alias--a-standing-campaign-decision-read-first) above.
+
+### Pickling an alias — and the upstream bug that makes the naive route fail
+
+Done once for `afilmv_ehl` (2026-10-02): **618 s → 199 s per task, 3.10×**, with
+output verified **bit-identical** to the tarballs. The script is
+`scripts/rpxdock_pickle/gen_pickles.py` (`generate`, `regen_base`, `check`,
+`fresh`, `basecheck`, `promote`). Read this before pickling another alias.
+
+**⚠ Upstream's `--generate_hscore_pickle_files` produces an UNLOADABLE base
+table.** The five `hier*` pickles are fine; the `base.rpx` one raises in any fresh
+process:
+
+```
+AttributeError: Can't get attribute '_PickleWorkaround.flush_only_netcdf_file'
+on <module 'xarray.backends.scipy_'>
+```
+
+`ResPairScore.rotspace` is an xarray Dataset still backed by the scipy netCDF
+store at dump time, so the pickle records a by-name reference to a class xarray
+creates **dynamically** inside `_open_scipy_netcdf(..., flush_only=True)`. Nothing
+registers that class in a process that only loads pickles. The data is intact —
+the failure is serialisation, and it fails **loudly on load**, not silently.
+
+**`.load()` alone does NOT fix it.** Materialising the arrays leaves `ds._close`
+bound to `ScipyDataStore.close`, and *that hook* drags the class in. The fix is to
+**rebuild the Dataset** from `np.array` copies of its data vars and coords
+(keeping attrs), after which `_close` is `None`.
+
+**Verification that actually proves it — in this order:**
+
+1. **Scan the pickle bytes before writing** for `scipy_`, `_PickleWorkaround`,
+   `flush_only`, `xarray.backends`. Any hit means the reference leaked; abort
+   without touching the staged file.
+2. **Load it in a genuinely FRESH process, with no `.txz` loaded first.** This is
+   the step that matters: the broken file loads perfectly in a *primed* process,
+   so testing the convenient way reproduces the illusion.
+3. **Compare content against the original `.txz`** — array shapes, dtypes and md5s
+   (79 entries for `afilmv_ehl`'s base; expect 0 differences).
+4. **After promoting, re-dock a known scaffold and require bit-identical scores.**
+   rpxdock is deterministic, so this is the real end-to-end equivalence test.
+
+**Procedure, and why each step is shaped this way:**
+
+* Generate into a staging dir **outside** the alias dir (`/rpxdock_files/.pickle_staging_<alias>/`).
+  A partial set inside the alias dir silently drops every `.txz` (see the trap
+  above), so nothing enters until all files are verified.
+* **`cd` into the staging dir first** — the flag writes `os.path.basename(f) + '.pickle'`,
+  a *relative* path, so it lands in the process cwd. In a prosapia task that is
+  `/runs`, i.e. ~10 GiB on the wrong Volume.
+* The flag needs `--architecture C2 --inputs1 <any shipped pdb>` to satisfy
+  argparse, even though it `sys.exit()`s **before** docking.
+* prosapia never commits `rpxdock-hscore` (only the runs Volume), so this needs a
+  **one-off Modal function with an explicit `Volume.commit()`**, not a `sapia run`.
+* Promote by moving all files **as a set**, then commit. Reverting means moving all
+  six back out, again as a set.
+* Cost: ~509 s to generate at `--mem 96G`, plus ~9.24 GiB of storage.
+
+**`ailv_h` is plausibly the same defect** — its sidecars came from an unknown
+Python/numpy and have never been loaded here. If it is ever needed, run step 2
+against its base pickle before trusting it; regenerating locally is likely easier
+than diagnosing someone else's dump.
 
 Two traps, both from `get_hscore_file_names` (`rpxdock/score/rpxhier.py:270`):
 
