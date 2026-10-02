@@ -1,8 +1,12 @@
 # Campaign: pH-responsive EGFR binder via dimer protection
 
-**Date:** 2026-10-02 · **Status: in progress — Phase 2, step 1**
-**Backend:** Modal, volume `sapia-runs-toon` · **Branch:** `worktree-ifacegeom`
+**Date:** 2026-10-02 · **Status: in progress — Phase 2, step 5 (`dimerfit` being built)**
+**Backend:** Modal, volume `sapia-runs-toon` · **Run_dir:** `outputs/20261002_143419_dimer_phase2`
+**Branch:** `worktree-ifacegeom`
 **Strategy doc:** `dimer_binder.md` · **Execution plan:** `dimer_binder_plan.md`
+
+Steps done: 0 seed (37 rows) → 1 `ifacegeom` (37/37 OK) → 3 `chainsel` (37/37 OK) →
+4 `rpxdock` C2 (37/37 OK, **740 docks** in `table1`). Step 2 skipped by decision.
 
 **Brief:** design a binder that engages EGFR only at low pH. Two copies self-associate at
 pH 7.4 through a histidine-containing interface that occludes the EGFR-binding face; at low
@@ -92,13 +96,15 @@ These are a **floor, never evidence**: they come from the same AF2 that designed
 `dimer_binder.md` asks for an EGFR epitope **without histidines**, because their protonation
 at low pH could ruin the very interface we need at low pH.
 
-**On this pool that requirement is unsatisfiable.** From the (now deleted) verification run,
-pending re-confirmation in `dimer_phase2`:
+**On this pool that requirement is unsatisfiable.** Confirmed in `dimer_phase2`, 37/37 `OK`
+(an earlier verification run had found the same numbers and was deleted before this session;
+these are the re-measured ones):
 
 - **His409 is contacted by 37/37 binders.** It sits **two residues from the F412 hotspot** —
   the intended hydrophobic patch has a histidine built into it.
-- **His346 is contacted by ~29/37.**
-- **0/37 have a histidine-free target epitope.**
+- **His346 is contacted by 29/37**; His359 by 2.
+- **0/37 have a histidine-free target epitope.** `n_target_his` is 1 in 8 designs, 2 in 27,
+  3 in 2 — never 0.
 
 This is the "record, don't filter" principle earning its keep: a histidine-free gate applied
 at step 1 would have **emptied the pool**.
@@ -146,6 +152,70 @@ is how they get the chain mapping wrong.
 
 ---
 
+## 4b. Results so far
+
+### Step 1 — `ifacegeom` on 37 hEGFR complexes
+
+Invariant that validates everything else: **`ifacegeom_binder_len` matched the filename's
+`l<N>` on all 37**, a number the tool never reads. Had the chain assignment been wrong it
+would have returned 193 (the target) on every row.
+
+| | min | Q1 | median | Q3 | max |
+| --- | --- | --- | --- | --- | --- |
+| `binder_len` | 60 | 64 | 74 | 86 | 118 |
+| `n_binder_res` (epitope footprint) | 15 | 21 | 24 | 28 | 35 |
+| `n_target_res` | 22 | 28 | 30 | 33 | 45 |
+| `cterm_proj` | −18.1 | −7.0 | −4.7 | 0.1 | 16.4 |
+| `cterm_iface_min_dist` | 0.0 | 5.2 | 8.7 | 12.2 | 21.9 |
+
+- **All five hotspots contacted by 37/37** (L325, P349, F412, V417, I467), residue identity
+  confirmed independently from the raw CIFs. The pool hits the patch it was aimed at — but this
+  is uniform, so it carries **no discriminating information**.
+- **27/37 have `cterm_proj < 0`** (C-terminus on the far side from the epitope, the desired
+  side). **A prediction was recorded that most would be positive, and it was wrong** — the
+  C-terminal tag constraint is far less binding on this pool than the plan assumed and need not
+  drive selection.
+- **`n_binder_his > 0` in 34/37** — binder-side epitope histidines, anticipated nowhere in
+  either planning document. Only 3 designs have none.
+- 36/37 are ≤115 aa; only `v1_l118` exceeds the budget.
+
+Cross-tabulating the two recorded criteria, 5 designs carry **only** His409 *and* have the
+C-terminus on the far side — `v2_l73_e306ad4b` (the standout: 15-residue footprint,
+`cterm_iface_min_dist` 21.9), `v2_l73_48b9cdd4`, `v2_l74_f6ae3fc9`, `v2_l61_d94f18a9`,
+`v2_l86_adb0cabb`. **Recorded, not used as a filter.**
+
+### Steps 3–4 — `chainsel` → `rpxdock` C2
+
+`chainsel --chains B --rename-to A`, no renumber flag: 37/37 `OK`,
+`chainsel_n_res == ifacegeom_binder_len` on all 37, `chainsel_n_chains == 1` on all 37.
+
+`rpxdock` C2, `--nout-top 20 --hscore-files afilmv_ehl --use-orig-coords --recenter-input
+--mem 64G`: 37/37 `OK`, **740 rows** in `table1`, 740 dock PDBs on disk.
+
+| | min | Q1 | median | Q3 | max |
+| --- | --- | --- | --- | --- | --- |
+| `score` | 63.6 | 100.3 | 115.8 | 131.3 | 192.8 |
+| `rpx` | 63.1 | 99.3 | 114.9 | 129.9 | 191.6 |
+| `ncontact` | 24 | 78 | 95 | 118 | 286 |
+| `n_docks` | 55 | 74 | 81 | 99 | 121 |
+| `hscore_seconds` | 167.0 | 194.3 | 197.1 | 207.8 | 250.9 |
+
+Trust: `hscore` = `afilmv_ehl` on 740/740; `n_chains_in` = 1 on 740/740; `recentered` True on
+all; `input_com_dist` 85.5–96.6 Å, so **`--recenter-input` was essential, not decorative**.
+`--use-orig-coords` took: 8.25 atoms/residue, **0 `CEN`**. Lineage audit: 37 distinct parents,
+exact match, no scaffold dropped.
+
+> **`--nout-top 20` bound on ALL 37 scaffolds.** `n_docks` is 55–121, so **~3,000 poses were
+> discarded against 740 kept.** This matters because rpxdock is expected to favour docking onto
+> the hydrophobic face we are preserving — i.e. the useful geometry may sit *below* the score
+> cut. Re-dumping is not cheap: `_Result.txz` cannot be reopened in this image (no PyRosetta),
+> so more poses means paying the ~200 s table load again per scaffold.
+> **Decision deferred to `dimerfit`:** measure whether the wanted geometry correlates with
+> `score` rank before buying more poses. **Prediction on record: it will correlate negatively
+> or not at all.**
+
+---
+
 ## 5. Traps found, with their signatures
 
 - **The binder is chain B, the target chain A** — the *opposite* of `ifacegeom`'s default and
@@ -166,6 +236,37 @@ is how they get the chain mapping wrong.
 - **`modal-shell --cmd` always exits 0.** Never test `$?`. The authoritative submit evidence
   is `<out_dir>/<script>_logs/<script>_modal.json` holding `{app_id, n_tasks}`; no file means
   nothing was queued.
+- **An empty manifest line makes a task run on nothing, silently.** The single most expensive
+  failure of this session: **18 of 37 rpxdock tasks** died with
+  `IsADirectoryError: [Errno 21] Is a directory: '.'`. Cause: the prelude does
+  `SAPIA_LINE="$(sed -n "${SAPIA_TASK_ID}p" "$MANIFEST")"`, and **`sed -n Np` on a file that
+  does not yet show N lines exits 0 with empty output** — `set -e` does not trip. Three empty
+  fields reached the worker and `--config ''` became `Path('') == '.'`.
+  **Signature:** a `.out` reading `task N: rpxdock on  ()` with the name *and* path blank;
+  optionally `warning: command substitution: ignored null byte in input` from the prelude.
+  **What it was NOT:** the manifest was provably intact afterwards (37 lines, 3 fields, zero
+  NUL bytes, byte-identical in structure between the 18 that failed and the 19 that passed);
+  versions matched across the boundary (sha256-identical prelude/`modal.py`/`sapia_modal_task`);
+  off-by-one was ruled out. It is a **read-side visibility failure in the task container**.
+  Note prosapia already defends against this — `publish_manifest` uses `batch_upload` and its
+  docstring names this exact failure — **and it was not sufficient.** One task re-read ~2
+  minutes later and still saw nothing, so the stale view can outlive a short backoff; warm
+  container reuse carrying an older Volume mount is the leading hypothesis, **unproven**.
+  **Fix:** commit `30566b5` hardens `tools/rpxdock/rpxdock.sh` — retry 5× with backoff logging
+  the line count the container sees, then fail loudly; check the **field count** before the
+  empty check (because `cut -f2` on a line with no tabs returns the *whole line*, so a
+  one-field line would pass as `name == input == config`); check each path is a non-empty file.
+  **The hazard is workspace-wide** — every tool's `.sh` reads the manifest this way.
+  `ifacegeom` and `chainsel` got lucky, not immune. The real fix belongs upstream in
+  `sapia_task_prelude.sh`.
+- **The rpxdock skill's "~83 distinct atom names proves `--use-orig-coords` took" is wrong.**
+  83 implies ~15.8 atoms/residue, which only works if hydrogens were counted; ~35 is the
+  correct heavy-atom name count and is **not diagnostic**. The real test is
+  **~8.4 atoms per residue and zero `CEN` pseudo-atoms**. Backbone-only is ~5/residue + `CEN`.
+- **A deleted run_dir leaves a tool's `SKILL.md` citing evidence nobody can re-read.** Harmless
+  here (the run was deliberately cleaned up and the numbers reproduced exactly), but a campaign
+  decision was very nearly taken on figures that could not be verified. **A commit message is
+  not a measurement.**
 - **Custom tools are baked from the local working directory.** `ifacegeom` lives only on
   `worktree-ifacegeom`, so the workstation must be launched from that worktree. From the main
   checkout the tool is simply absent from `sapia run --help` — it looks like it was never
@@ -202,8 +303,29 @@ is how they get the chain mapping wrong.
 
 ## 7. Next
 
-1. Land the `dimer_phase2` ifacegeom run; confirm the `l<N>` invariant on all 37.
-2. Report distributions of `cterm_proj`, `cterm_iface_min_dist`, `n_binder_res`,
-   `n_target_his`; choose thresholds **with the user**, and record them here.
-3. Update `ifacegeom/SKILL.md` to cite the live run_dir.
-4. Decide the scope of step 2 revalidation before building further.
+1. **Verify `dimerfit`** on real data under a `verification` dir-label, then run it on all 740
+   docks. Checks that must pass before any number is read: `seq_match_frac` ≈ 1.0,
+   `resnum_offset` == 0, per-protomer `n_res` == the parent's `ifacegeom_binder_len`, and a bad
+   input giving `error:` with NA rather than a plausible number.
+2. **Settle the `--nout-top` question** (see §4b): does the wanted geometry correlate with
+   `rpxdock_score` rank? If the good docks cluster at ranks 15–20 we lost poses and should
+   re-dock wider; if they are at ranks 1–5, the cut cost nothing.
+3. **Choose thresholds with the user** for `occluded_frac` (want high), `frac_overlap` (want
+   low), `link_dist` (~20 aa budget) and `epitope_com_dist`. Record them here — without them
+   the table cannot say why a row was carried forward.
+4. **Decide step 8's histidine policy:** fix the binder-side epitope histidines (34/37) or let
+   atomium redesign them.
+5. **Cheap and not done:** is His409 a histidine in mouse EGFR? One sequence vs one sequence.
+
+### Housekeeping debt
+
+- **`uv.lock` on this branch pins prosapia `post18`**, whose Modal executor raises
+  `commit() can only be called on a mounted volume inside a container` and **queues nothing
+  while printing `Submitting N designs`**. The worktree venv was repaired in place to `post19`
+  / `4782f10`; the lockfile was not. The next person to build this branch gets the broken pin.
+- `ifacegeom/SKILL.md` cites the deleted run_dir; repoint it at
+  `outputs/20261002_143419_dimer_phase2`.
+- `rpxdock/SKILL.md` carries the wrong atom-name diagnostic (see §5).
+- `worktree-ifacegeom` is unmerged — `dimer_tools_dev` has no `ifacegeom` and no `dimerfit`.
+  A second stale worktree, `worktree-tool-commits`, is also unmerged.
+- `binder-campaign` skill is still missing while three files reference it.
