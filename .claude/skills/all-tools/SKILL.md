@@ -53,6 +53,7 @@ Every tool leaf-prefixes its columns and writes `<leaf>_status`; `OK` is the onl
 | **cms** | "How much real interface is there, and does it fit?" Contact molecular surface + shape complementarity, GPU. | no default — name the structure column | `target`, `binder`, `sc`, `sc_area`, `sc_median_dist`, `n_atoms_binder/_target`, `path` (**per-residue CMS: the epitope map**) | `cms` |
 | **ringfit** | "Does the binder straddle two protomers, and would it clash with the rest of the assembly or its lipid belt?" (Very specific, you will almost never need it) | `rfdiffusion3_path` + `--ref-structure` | `align_rmsd`, `seq_match_frac`, `resnum_offset`, `bsa_t1/t2/total`, `bridge_ratio`, `hotspot_recall`, `n_clash`, `min_dist_ring`, `lipid_clash`, `path` | `ringfit` |
 | **ifacegeom** | "**Which residues** are the epitope, and where are the termini relative to it?" The interface residue lists on **both** sides, as columns that ride lineage — plus the target-side histidine count and a signed C-/N-terminus projection. CPU-only, milliseconds per design. | no default — name the **complex** structure column | `binder_res` (**the epitope, `A:12,A:15,…`**), `n_binder_res`, `binder_res_seq`, `target_res`, `target_his`/`n_target_his`, `binder_com`, `binder_iface_com`, `iface_com`, `axis_len`, `nterm_res`/`cterm_res`, `cterm_proj`/`nterm_proj` (**signed; >0 = interface side**), `cterm_iface_dist`/`_min_dist`, `binder_len`, `path` (**per-residue evidence**) | `ifacegeom` |
+| **dimerfit** | "Put this C2 dock back into the binder–target frame: does the partner protomer **block the target**, and can the two protomers be **linked**?" Superposes dock protomer A onto the reference binder and applies that **one** transform to the whole dimer. CPU-only, ~90 ms per design. **Premise: exactly two protomers of the same binder, plus the complex they came from.** | no default — name the **dock** column (`rpxdock_path`), plus `--ref-column` / `--epitope-column` / `--target-epitope-column` **via lineage** | trust: `align_rmsd`, `n_align_atoms`, `seq_match_frac`, `resnum_offset`, `resnum_match`, `dock_chains`, `ref_binder_chain`, `ref_target_chains`, `n_protomers`, `n_res_a`/`n_res_b`, `ref_binder_len`, `n_atoms_b`; geometry: `dimer_iface_res`/`n_dimer_iface_res`, `dimer_iface_com`, `epitope_com`, `epitope_com_dist`, `n_epitope_res`, `overlap_res`/`n_overlap_res`/`frac_overlap` (**want LOW**), `link_dist`, `cterm_to_nterm_res`; occlusion: `n_clash`, `clash_frac`, `min_dist_b_target`, `n_target_epitope_res`, `occluded_res`/`n_occluded_res`/`occluded_frac` (**want HIGH**); `path` (**the moved dimer, no target**), `complex_path` | `dimerfit` |
 
 ## Question → tool
 
@@ -74,6 +75,7 @@ Every tool leaf-prefixes its columns and writes `<leaf>_status`; `OK` is the onl
 | Is it well packed / any buried unsats | `pyrosetta` (`packstat`, `buried_unsat`, `score_per_res`) |
 | Does it bridge two protomers of an oligomer | `ringfit` (`bridge_ratio`, `hotspot_recall`) |
 | Would it clash with the rest of the assembly | `ringfit` (`n_clash`, `min_dist_ring`, `lipid_clash`) |
+| Would this C2 dimer block its own binding site, and can its protomers be linked | `dimerfit` (`occluded_frac` + `n_clash` **want HIGH**, `frac_overlap` **want LOW**, `link_dist` recorded) — and read `align_rmsd`/`seq_match_frac`/`resnum_offset` before trusting any of them |
 | Fold the complex, not the binder alone | `mkcomplex` first, then `boltz -i mkcomplex_sequence` |
 
 ## Input-column wiring
@@ -95,6 +97,8 @@ The commonest silent failure in this workspace is a tool reading the wrong colum
 | boltz, binder | usalign / cms | `chainsel` first, then the `chainsel_path` it wrote |
 | anything | cms / chainsel / ifacegeom | no default at all — you must name the column. `ifacegeom` needs the **complex** (binder + target in one file); a monomer has no interface |
 | ifacegeom | chainsel / rpxdock / a later graft | nothing — its columns ride lineage. But `ifacegeom_binder_res` is in **this file's numbering**, and `chainsel`/`rpxdock` both renumber; the consumer does the remapping, not `ifacegeom` |
+| rpxdock | dimerfit | `-i rpxdock_path` (no default). The reference complex and both epitope lists come from the **parent** table through lineage: `--ref-column input_path`, `--epitope-column ifacegeom_binder_res`, `--target-epitope-column ifacegeom_target_res`. Pass `--binder-chain-in-ref B --target-chains-in-ref A` for the inherited hEGFR complexes — binder is chain **B** there |
+| dimerfit | hbdesigner / anything structural | `-i dimerfit_path` — the **transformed dimer without the target**. `dimerfit_complex_path` is for inspection only; never design against it |
 | anything | usalign | `--col-a` / `--col-b`, **not** `-i` |
 
 Two structure columns exist for every predicted design: the **backbone** it was designed as (`rfdiffusion3_path`, in the parent table) and the **prediction** (`boltz_path`, in this one). Lineage resolves the parent for you; say which you mean.
@@ -115,5 +119,5 @@ Two structure columns exist for every predicted design: the **backbone** it was 
 
 ## One operational trap
 
-- Custom tools (`atomium`, `bindcraft2`, `chainsel`, `cms`, `hbdesigner`, `mkcomplex`, `ringfit`, `rpxdock`) live in this project's `tools/` and are baked into the workstation image from the **local working directory**. If `sapia modal-shell` is launched from somewhere other than the project root, they are simply absent from `sapia run --help` — the built-ins still work, so it looks like the custom tool was never written rather than like a path problem.
+- Custom tools (`atomium`, `bindcraft2`, `chainsel`, `cms`, `hbdesigner`, `mkcomplex`, `ringfit`, `rpxdock`, `ifacegeom`, `dimerfit`) live in this project's `tools/` and are baked into the workstation image from the **local working directory**. If `sapia modal-shell` is launched from somewhere other than the project root, they are simply absent from `sapia run --help` — the built-ins still work, so it looks like the custom tool was never written rather than like a path problem.
 - **No tool names its output table**, and none of them will reorder your campaign. You compose.

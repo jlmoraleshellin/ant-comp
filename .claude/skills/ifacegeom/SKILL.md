@@ -179,7 +179,7 @@ is inherited and finite, so exclude nothing before seeing the distribution.
 ## The inherited hEGFR pool — facts you need before running it there
 
 Measured on `sapia-runs-toon:inputs/bc2_output_for_anthony/` (run
-`outputs/20261002_140341_ifacegeom_hegfr_test`):
+`outputs/20261002_143419_dimer_phase2`):
 
 - **The binder is chain B; the target is chain A.** The opposite of this tool's
   default. Pass `--binder-chains B --target-chains A` or every number is wrong.
@@ -216,8 +216,16 @@ literature and against brute-force computation written independently of the tool
 
 ## Verified on real data (Modal)
 
-`outputs/20261002_140341_ifacegeom_hegfr_test` on `sapia-runs-toon`, 37 inherited
+`outputs/20261002_143419_dimer_phase2` on `sapia-runs-toon`, 37 inherited
 BindCraft2 hEGFR complexes, one batched task, **37/37 `OK`**, empty stderr:
+
+> **Cite a run_dir that still exists.** This section previously cited
+> `outputs/20261002_140341_ifacegeom_hegfr_test`, which was deleted before the
+> campaign proper began. The numbers were genuine and reproduced exactly in the
+> run above — but for a while this page asserted results nobody could re-read,
+> and a campaign decision was nearly taken on them. **A commit message is not a
+> measurement.** If the run backing this section is ever cleaned up, re-point
+> this section or delete the claim.
 
 - `ifacegeom_binder_len` matched the `l<N>` parsed from every filename (37/37) — an
   invariant the tool did not compute.
