@@ -16,9 +16,20 @@ reasons that file gives:
 The AlphaFold parameters (~5.3 GB) are NOT baked in: they download on first use into
 ``$XDG_CACHE_HOME/bindcraft``, which is a Volume
 (``SAPIA_MODAL_VOLUME_BINDCRAFT_CACHE``, default ``bindcraft-cache``) so later tasks
-reuse them. Warm it with a single one-target campaign before fanning out, or several
-first containers will each pull the same 5.3 GB. ``BINDCRAFT_AF2_PARAMS`` in ``.env``
-overrides the location entirely.
+reuse them. Warm it with ``sapia run bindcraft2 <run_dir> --fetch-weights-only``
+before fanning out, or several first containers will each pull the same 5.3 GB.
+``BINDCRAFT_AF2_PARAMS`` (the parameters alone) or ``BINDCRAFT_WEIGHTS`` (the whole
+cache root) in ``.env`` override the location entirely.
+
+The same Volume also collects jax's compiled graphs, under
+``$XDG_CACHE_HOME/bindcraft/compile_cache/<card>`` -- BindCraft2 sets
+``JAX_COMPILATION_CACHE_DIR`` itself (``cli.use_campaign_compile_cache``), keyed by
+GPU model, so later campaigns on the same card skip the compile.
+
+GPUs: ``RESOURCES`` asks for one card, which is one serial campaign. A campaign can
+instead fan its trajectories across several (``design_workers``), for which the task
+needs the cards too -- ``-g 4`` makes the request ``A100:4``. The default stays at
+one on purpose: the cost of a fan-out should be asked for, not inherited.
 """
 
 import modal
