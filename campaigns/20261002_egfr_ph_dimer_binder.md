@@ -84,10 +84,14 @@ These are a **floor, never evidence**: they come from the same AF2 that designed
 | Backend | Modal, `sapia-runs-toon` | `.env:28`. `CLAUDE.md`'s env table still says `sapia-runs` — stale. |
 | Ortholog order | **human first**, mouse later | User's call. Mouse is a second `ifacegeom` run (own rows, or `-l` on a second table). |
 | `renum/` | **excluded** | See above. |
-| Governing principle | **record, don't filter** | Plan §1.1. The pool is fixed and finite; inventing a threshold before seeing a distribution is how a campaign discards its only good designs. |
+| Governing principle | **record, don't filter** | Plan §2.1. The pool is fixed and finite; inventing a threshold before seeing a distribution is how a campaign discards its only good designs. |
 | Histidine in epitope | **accept, record, proceed pH-agnostic** | See §3 — the requirement is unsatisfiable on this pool. |
 | Campaign run_dir | **clean mint**, label `dimer_phase2` | The earlier run_dir was a verification run and was deleted before this session. ifacegeom is CPU-only and batched, so re-running is nearly free and buys clean lineage from row zero. |
-| Seeding `table0` | hand-written manifest via `scripts/seed_table0_from_bc2.py` | There is **no `sapia` import/seed verb** — confirmed, the verbs are `new_run/init/fork-tool/modal-shell/run/collect`. Plan §2.2 asks for this to be done once, explicitly, and recorded. This is the record. |
+| Seeding `table0` | hand-written manifest via `scripts/seed_table0_from_bc2.py` | There is **no `sapia` import/seed verb** — confirmed, the verbs are `new_run/init/fork-tool/modal-shell/run/collect`. Plan §3 asks for this to be done once, explicitly, and recorded. This is the record. |
+| Linker metric | **obstruction-aware path, not a straight line** | A terminal-Cα chord is only a lower bound on what a linker must span. Measured, `dimerfit_link_dist` was 10.4–50.3 Å over 40 docks — always inside a 20 aa budget, i.e. a gate that never fired. Replaced by an A\* route through solvent-accessible space. |
+| Where that metric lives | **new standalone tool `linkpath`**; `link_dist` and `cterm_to_nterm_res` **removed from `dimerfit`** | Different premise (routing vs. occlusion), reusable for any future fusion-linker question, and its answer is set by the obstacle set — a decision the caller must make explicitly. User's call to remove rather than keep the chord as a pre-screen. |
+| `linkpath` obstacle set | **the dimer alone** (`dimerfit_path`, not `dimerfit_complex_path`) | Not because the target corrupted the old number — it never did; `link_dist` was computed on a dimer-only model and a chord is rigid-body invariant anyway. Because of *which state the linker spans*: at pH 7.4 the construct is closed and EGFR is not bound, so routing around EGFR would invent an absent obstruction. |
+| `linkpath` probe radius | **2.0 Å**, not 1.4 | A polypeptide backbone is thicker than water; a water probe threads crevices a real chain cannot enter and understates the detour. Recorded per row as `linkpath_probe`. |
 
 ---
 
@@ -218,6 +222,44 @@ exact match, no scaffold dropped.
 
 ## 5. Traps found, with their signatures
 
+- **`linker_path.py` (the root-level prototype) seals its own anchors inside a blocked shell.**
+  The anchor atom sits at the centre of the bubble `--carve` frees, but the atom still blocks a
+  sphere of `vdW + probe` around itself. With the defaults in play (`carve` 3.0, `probe` 2.0,
+  backbone C `vdW` 1.70) the freed bubble is wrapped in a **complete 0.70 Å-thick blocked
+  shell**, so the route can only escape through a grid artifact. **Signature:** the answer moves
+  with `--spacing` and gets *worse* as the grid gets finer — measured on one C2 dimer, **57.29 Å
+  at spacing 1.0 and NO PATH AT ALL at spacing 0.5**. A path-length that is not stable under
+  refinement is the tell. **Proof it is a bug and not a modelling choice:** on a free-space pair
+  whose answer is known exactly to be 27.10 Å, the prototype returns **27.93 Å (probe 1.4) /
+  29.39 Å (probe 2.0)**; `linkpath`, which grows the bubble to `vdW(anchor) + probe`, returns
+  **27.10 Å** exactly. On the real dimer the fix shortens the route by ~4.5 Å and makes it
+  stable across spacings (52.80 / 50.84 / 54.03 Å at 1.0 / 0.75 / 0.5).
+  **Are old prototype numbers salvageable? Lengths yes, verdicts no.** Correcting the defect
+  only ever *frees* voxels, so the corrected free set is a strict superset of the buggy one
+  and the start/goal voxels are identical — the corrected optimum is a minimum over a
+  superset of the same paths, hence **corrected ≤ buggy necessarily**. Measured over 72
+  paired runs (6 structures × 4 spacings × 3 probes): 25 inflated by up to **4.76 Å**, 20
+  identical, **0 cases where the corrected route came back longer**. So a recorded length is
+  a safe **upper bound** — if it cleared the linker budget it still clears it; if it failed,
+  it may be a false reject by up to ~5 Å. The inflation is **not a constant you can
+  subtract** (0.00–4.76 Å, set by local geometry at the anchor). But a recorded **"No free
+  path found" is worthless**: 15 of those 72 runs reported no route where one exists, and it
+  worsens as the grid gets finer or the probe larger — **every** `--spacing 0.5 --probe 2.0`
+  case in the sweep was a false negative. Never conclude a design is unlinkable from a
+  prototype run.
+- **`linker_path.py`'s `direct path clear` line is always "obstructed".** Its grid-sampled
+  `line_is_clear` walks the straight segment including the two anchor residues' own atoms,
+  which the segment necessarily starts and ends inside. **Signature:** it reports obstructed
+  for *two residues alone in empty space* — verified. `linkpath_direct_clear` is computed
+  analytically and excludes the anchor residues' own atoms, so **the two are not comparable
+  and must never be reconciled.**
+- **A voxel route can cut corners between free voxel centres**, which makes the path come back
+  too **short** — wrong in the direction that flatters a design, and therefore the dangerous
+  direction. **Signature:** none visible in `path_dist` itself; this is why `linkpath` carries
+  `min_clearance` (closest approach of the continuously-sampled route to an atom surface) and
+  downgrades a row to `warn:` below `probe − 0.25`. Measured 1.99–2.06 Å against probe 2.0 on
+  healthy rows.
+
 - **The binder is chain B, the target chain A** — the *opposite* of `ifacegeom`'s default and
   of the plan's own §3.1 example. **Signature if missed:** `ifacegeom_binder_len` comes back
   as 193 (the target) on every row. The independent check is the filename's `l<N>`, which the
@@ -311,8 +353,10 @@ exact match, no scaffold dropped.
    `rpxdock_score` rank? If the good docks cluster at ranks 15–20 we lost poses and should
    re-dock wider; if they are at ranks 1–5, the cut cost nothing.
 3. **Choose thresholds with the user** for `occluded_frac` (want high), `frac_overlap` (want
-   low), `link_dist` (~20 aa budget) and `epitope_com_dist`. Record them here — without them
-   the table cannot say why a row was carried forward.
+   low), `epitope_com_dist`, and `linkpath`'s `n_res_relaxed` against the ~20 aa budget.
+   Record them here — without them the table cannot say why a row was carried forward.
+   Note `occluded_frac` and `frac_overlap` measured r = 0.97, so those two are one
+   trade-off dial, not two independent gates.
 4. **Decide step 8's histidine policy:** fix the binder-side epitope histidines (34/37) or let
    atomium redesign them.
 5. **Cheap and not done:** is His409 a histidine in mouse EGFR? One sequence vs one sequence.

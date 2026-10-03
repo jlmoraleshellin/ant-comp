@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """
 Place a C2 dock back into the binder/target frame, and measure whether the partner
-protomer occludes the target binding site and whether the two protomers can be linked.
+protomer occludes the target binding site.
 
 This is the per-array-task step of the dimerfit tool (and works standalone). The
 premise, in one sentence: *a binder we already know binds the target was docked
 against itself with C2 symmetry, and we now want to know whether the resulting dimer
-would sterically block the target (the "off" state of a pH switch) and whether the
-C-terminus of one protomer can reach the N-terminus of the other.*
+would sterically block the target (the "off" state of a pH switch).*
 
 What it does, per design:
 
@@ -20,8 +19,6 @@ What it does, per design:
 4. Measure, in that frame:
    * **occlusion** -- how much of the target's binding site protomer B covers
      (``occluded_frac``, ``n_clash``, ``clash_frac``): we WANT this high.
-   * **linkability** -- CA(C-term of A) to CA(N-term of B) (``link_dist``), against a
-     ~20 aa linker budget. Recorded, never gated on.
    * **where the C2 interface sits** relative to the epitope (``dimer_iface_res``,
      ``epitope_com_dist``, ``n_overlap_res``, ``frac_overlap``): we want the dimer
      interface ADJACENT to the epitope, so overlap LOW.
@@ -30,7 +27,11 @@ What it does, per design:
 Scope limits -- where these numbers mean nothing
 ------------------------------------------------
 * **Exactly two protomers.** A monomer, or a C3+ assembly, is an error for that row:
-  ``link_dist`` and "the partner" are undefined with any other count.
+  "the partner" is undefined with any other count. The occlusion question is asked of
+  exactly one partner protomer -- protomer A is the one superposed onto the reference
+  binder, so protomer B is by construction the only body whose occlusion of the target
+  is measured. With one protomer there is no partner; with three or more there is no
+  single answer to "does the partner occlude the site", and the C2 premise is false.
 * **The dock must be the same protein as the reference binder**, numbered
   compatibly. The tool does not do sequence alignment: residues are paired ordinally
   (i-th CA to i-th CA) when the two chains hold the same number of CA atoms and by
@@ -46,6 +47,13 @@ Scope limits -- where these numbers mean nothing
 * **``n_clash``/``clash_frac`` are heavy-atom distance counts, not an energy.** They
   are not ``fa_rep`` and must not be read as one -- there is no Rosetta in this image.
 * **Nothing is relaxed or repacked.** Rigid-body geometry of the inputs as given.
+* **It says nothing about whether the two protomers can be linked.** That question
+  belongs to the ``linkpath`` tool, which takes ``dimerfit_path`` (the transformed
+  dimer, no target) and computes an obstruction-aware shortest path through
+  solvent-accessible space. This tool used to report a straight C-term(A) to
+  N-term(B) CA-CA distance; that column was retired because a straight line is only a
+  lower bound on what a linker must span, and measured across 40 real docks that
+  bound (10.4-50.3 A) was never binding against a ~20 aa budget.
 
 Writes a one-row TSV (name, status, path, complex_path, then the metrics) that
 collect_dimerfit.py merges back into the table. Errors are recorded as data (a status
@@ -74,8 +82,8 @@ from pathlib import Path
 import gemmi
 import numpy as np
 
-# A C2 dock has exactly two protomers; anything else makes "the partner",
-# link_dist and the occlusion question undefined.
+# A C2 dock has exactly two protomers; anything else makes "the partner" and
+# the occlusion question undefined.
 N_PROTOMERS = 2
 # Below this fraction of identity-agreeing matched pairs the dock<->reference
 # pairing is suspect (wrong chain, wrong design, a register shift): warn and
@@ -116,8 +124,6 @@ METRIC_COLUMNS = [
     "overlap_res",
     "n_overlap_res",
     "frac_overlap",
-    "link_dist",
-    "cterm_to_nterm_res",
     # --- occlusion of the target binding site by protomer B -------------------
     "n_clash",
     "clash_frac",
@@ -375,8 +381,9 @@ def resolve_dock_chains(model: gemmi.Model, spec: str, src: str) -> list[str]:
     """``--dock-chains`` -> exactly two chain IDs, [protomer A, protomer B].
 
     The dock file must hold **exactly two** protein chains, whatever ``--dock-chains``
-    says: with one protomer there is no partner to occlude anything and no N-terminus
-    to link to, and with three the C2 premise is simply false. ``auto`` takes the
+    says: with one protomer there is no partner to occlude anything, and with three
+    there is no single partner to ask about and the C2 premise is simply false.
+    ``auto`` takes the
     file's own chain order; an explicit list only decides which of the two is
     protomer A.
     """
@@ -687,15 +694,7 @@ def compute(
         else None
     )
 
-    # --- 5. linkability: C-term of A -> N-term of B ------------------------
-    cterm_a, nterm_b = prot_a[-1], prot_b[0]
-    link_dist = (
-        float(np.linalg.norm(cterm_a.ca - nterm_b.ca))
-        if cterm_a.ca is not None and nterm_b.ca is not None
-        else None
-    )
-
-    # --- 6. occlusion of the target binding site by protomer B -------------
+    # --- 5. occlusion of the target binding site by protomer B -------------
     min_dist_b_target, clash_mask = pair_stats(
         b_coords, target_coords, args.clash_cutoff
     )
@@ -752,8 +751,6 @@ def compute(
         "overlap_res": ",".join(r.label for r in overlap),
         "n_overlap_res": len(overlap),
         "frac_overlap": len(overlap) / len(epitope) if epitope else None,
-        "link_dist": link_dist,
-        "cterm_to_nterm_res": f"{cterm_a.label}->{nterm_b.label}",
         "n_clash": n_clash,
         "clash_frac": clash_frac,
         "min_dist_b_target": min_dist_b_target,
@@ -863,7 +860,7 @@ class Args(argparse.Namespace):
 def main() -> None:
     ap = argparse.ArgumentParser(
         description="Place C2 docks back into the binder/target frame and measure "
-        "occlusion and linkability for a batch of designs."
+        "occlusion of the target binding site for a batch of designs."
     )
     ap.add_argument(
         "--task-file",
@@ -910,8 +907,8 @@ def main() -> None:
                 f"{design.name}: {status} -- align_rmsd "
                 f"{_fmt(metrics['align_rmsd'])} A, seq_match_frac "
                 f"{_fmt(metrics['seq_match_frac'])}, resnum_offset "
-                f"{metrics['resnum_offset']}, link_dist {_fmt(metrics['link_dist'])} "
-                f"A, overlap {metrics['n_overlap_res']}/{metrics['n_epitope_res']}, "
+                f"{metrics['resnum_offset']}, "
+                f"overlap {metrics['n_overlap_res']}/{metrics['n_epitope_res']}, "
                 f"occluded {metrics['n_occluded_res']}/"
                 f"{metrics['n_target_epitope_res']}, n_clash {metrics['n_clash']}"
             )

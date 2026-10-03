@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
 Submit an array (SLURM or Modal) placing each C2 dock back into the binder/target
-frame and measuring occlusion and linkability.
+frame and measuring occlusion of the target binding site.
 
 Premise, which is the tool's whole contract: *a binder that is known to bind the
 target was docked against itself with C2 symmetry; place that dock back into the
-binder/target frame through protomer A and ask (a) whether the partner protomer
-occludes the target binding site, and (b) whether the two protomers can be linked.*
+binder/target frame through protomer A and ask whether the partner protomer
+occludes the target binding site.*
 
 Each task runs dimerfit_worker.py on a batch of designs. Per design it
 
@@ -14,8 +14,8 @@ Each task runs dimerfit_worker.py on a batch of designs. Per design it
   2. Kabsch-superposes dock protomer A onto the reference complex's BINDER chain,
   3. applies that ONE transform to the WHOLE dimer -- so protomer B lands wherever
      the C2 operator put it relative to the target,
-  4. measures occlusion of the target binding site by protomer B, the C2 interface's
-     position relative to the epitope, and the C-term(A) -> N-term(B) distance,
+  4. measures occlusion of the target binding site by protomer B and the C2
+     interface's position relative to the epitope,
   5. writes the transformed dimer (no target) and the dimer plus target.
 
 ``action: update`` -- this is a property of docks that already exist, so it annotates
@@ -31,6 +31,10 @@ What it does NOT do
 * It does **not** compute an energy. ``n_clash``/``clash_frac`` are heavy-atom
   distance counts -- not ``fa_rep``, and there is no Rosetta in this image.
 * It does **not** relax, repack or rescore anything.
+* It does **not** say whether the two protomers can be linked. That is ``linkpath``,
+  which consumes ``dimerfit_path`` (the transformed dimer, no target) and measures an
+  obstruction-aware path through solvent-accessible space rather than a straight
+  line.
 * It is **not** a symmetric-docking scorer (that is ``rpxdock``) and **not** an
   assembly-fit test (that is ``ringfit``, whose premise -- a binder straddling two
   adjacent protomers of a larger oligomer -- is a different question entirely).

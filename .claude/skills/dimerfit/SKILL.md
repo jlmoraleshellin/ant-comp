@@ -1,6 +1,6 @@
 ---
 name: dimerfit
-description: How to run the custom dimerfit tool — placing a C2 dock back into the binder/target frame through one protomer, then measuring whether the partner protomer occludes the target binding site (we want it to) and whether the two protomers can be linked. Covers the premise and where its numbers are meaningless, the lineage-resolved reference and epitope columns, the chain-convention trap (binder on B, target on A), the mapping-trust columns that catch a silently wrong superposition, the two opposite-signed requirements that must not be collapsed, and every column it collects. Load before composing a dimerfit run or interpreting its columns.
+description: How to run the custom dimerfit tool — placing a C2 dock back into the binder/target frame through one protomer, then measuring whether the partner protomer occludes the target binding site (we want it to). Covers the premise and where its numbers are meaningless, the lineage-resolved reference and epitope columns, the chain-convention trap (binder on B, target on A), the mapping-trust columns that catch a silently wrong superposition, the two opposite-signed requirements that must not be collapsed, and every column it collects. Load before composing a dimerfit run or interpreting its columns.
 ---
 
 # dimerfit
@@ -12,8 +12,7 @@ description: How to run the custom dimerfit tool — placing a C2 dock back into
 **Fast**: ~90 ms per design measured, so one batched task covers a whole dock table.
 
 > **Premise.** *Place a C2 dock back into the binder–target frame through protomer A,
-> and measure whether the partner protomer occludes the target binding site and
-> whether the two protomers can be linked.*
+> and measure whether the partner protomer occludes the target binding site.*
 
 Per design it:
 
@@ -21,15 +20,15 @@ Per design it:
 2. Kabsch-superposes dock protomer **A** onto the reference complex's **binder** chain;
 3. applies that **one** transform to the **whole dimer**, so protomer B lands wherever
    the C2 operator put it relative to the target;
-4. measures occlusion of the target binding site by protomer B, where the C2 interface
-   sits relative to the epitope, and the C-term(A) → N-term(B) distance;
+4. measures occlusion of the target binding site by protomer B and where the C2
+   interface sits relative to the epitope;
 5. writes the transformed **dimer** (no target) and the dimer **plus** target.
 
 ## Why it exists
 
 The pH-switch strategy needs a dimer that *blocks* its own binding site: the two
-protomers are linked, and in the "off" state the partner protomer sits where EGFR
-would. Deciding that from a dock requires putting the dock back into the frame of the
+protomers are linked (by a linker `linkpath` sizes, not this tool), and in the "off"
+state the partner protomer sits where EGFR would. Deciding that from a dock requires putting the dock back into the frame of the
 binder–target complex — which means superposing on **one chain** and moving **both**.
 
 Nothing in the workspace could do that:
@@ -44,11 +43,11 @@ Nothing in the workspace could do that:
   `binder_len`, `binder_chains`) has the same *machinery* — Kabsch, trust metrics,
   write the moved structure — but a different **premise**: a binder straddling two
   adjacent protomers of a larger oligomer. Its `bridge_ratio` is undefined here, and
-  it has no `link_dist`, no `occluded_frac`, no epitope-overlap columns. Same tools,
+  it has no `occluded_frac` and no epitope-overlap columns. Same tools,
   different question → new tool, not a fork.
 - **`usalign`** (`TM1`, `TM2`, `RMSD`, `ID*`, `L*`, `sup_path`) superposes two
   structures but cannot apply one chain's transform to a second chain, and emits no
-  occlusion, linker or overlap geometry.
+  occlusion or overlap geometry.
 - **`cms`** (`target`, `binder`, `sc`, `sc_area`, `sc_median_dist`, `n_atoms_*`, plus
   a per-residue file) and **`ifacegeom`** (`binder_res`, `target_res`, the COMs, the
   terminus projections) both measure **one file in its own frame**. Neither can see
@@ -61,7 +60,10 @@ the file the next step consumes.
 ## Scope — where these numbers are meaningless
 
 - **Exactly two protomers.** A monomer or a C3+ assembly is an `error:` row: "the
-  partner" and `link_dist` are undefined with any other count.
+  partner" is undefined with any other count. Protomer A is the one superposed onto
+  the reference binder, so protomer B is by construction the single body whose
+  occlusion of the target is measured — with one protomer there is no partner, with
+  three or more there is no single answer and the C2 premise is false.
 - **The dock must be the same protein as the reference binder.** The tool does no
   sequence alignment: it pairs residues ordinally (or by residue number) and
   *reports* whether that pairing holds (`seq_match_frac`, `resnum_offset`,
@@ -191,8 +193,13 @@ A wrong superposition produces perfectly plausible geometry, so read these first
 | `epitope_com_dist` | `|dimer_iface_com − epitope_com|` (Å). |
 | `n_epitope_res` | Epitope residues mapped onto the dock = the denominator of `frac_overlap`. |
 | `overlap_res`, `n_overlap_res`, `frac_overlap` | Residues that are **both** C2 interface and epitope. **We want this LOW**: the dimer interface should sit *adjacent* to the epitope, not on top of it (a dimer interface built from the binding face cannot bind at all once dissociated). |
-| `link_dist` | CA(C-term of A) → CA(N-term of B), Å. A ~20 aa linker reaches roughly 60–70 Å fully extended. **Recorded, never gated on.** |
-| `cterm_to_nterm_res` | e.g. `A:111->B:1` — checkable by hand against `dimerfit_path`. |
+
+**dimerfit no longer measures the linker span.** The straight C-term(A) → N-term(B)
+CA–CA distance it used to report was retired (see the history below). The live metric
+is `linkpath`, an obstruction-aware shortest path through solvent-accessible space;
+it takes **`dimerfit_path`** (the transformed dimer, no target) as its input column,
+and its `straight_ca_dist` column is the direct CA–CA equivalent of the retired
+dimerfit column, so old and new rows stay comparable.
 
 ### Occlusion of the target binding site — **HIGH is what we want**
 
@@ -228,8 +235,13 @@ collinear — Pearson r = 0.97 between `occluded_frac` and `frac_overlap`, and 0
 about the dock pool, not about the metrics: pick the trade-off deliberately (or widen
 the pool) rather than hoping one threshold satisfies both.
 
-`link_dist` was 10–50 Å across those 40 docks, i.e. **the linker never binds** at a
-~20 aa budget. Treat it as a record, not a gate, exactly as specified.
+**Why there is no linker column here any more.** The retired straight-line CA–CA
+distance measured 10.4–50.3 Å across those same 40 docks — i.e. at a ~20 aa budget
+(roughly 60–70 Å fully extended) the straight-line span **never once bound**. Since a
+straight line is only a *lower* bound on what a linker must actually span, a number
+that never binds is not even useful as a pre-screen, so it was removed rather than
+kept. Ask `linkpath` instead: it routes around the protomers rather than through
+them.
 
 `epitope_com_dist` (0.8–13.7 Å measured) is the continuous version of the overlap
 question and does not depend on a contact cutoff — useful for ranking inside a tied
@@ -247,13 +259,13 @@ def apply_filter(df):
         'and dimerfit_seq_match_frac > 0.99 '
         'and dimerfit_resnum_offset == 0 '
         'and dimerfit_occluded_frac >= 0.6 '
-        'and dimerfit_frac_overlap <= 0.35 '
-        'and dimerfit_link_dist <= 60'
+        'and dimerfit_frac_overlap <= 0.35'
     )
 ```
 
 The first four clauses are the trust gate; drop them only if you enjoy ranking
-nonsense. The last three are the science, and the thresholds are the campaign's call.
+nonsense. The last two are the science, and the thresholds are the campaign's call.
+Gate the linker separately on `linkpath`'s columns — dimerfit no longer has one.
 
 ## Verification done
 
@@ -269,8 +281,11 @@ from the reference binder, with `S` a true 180° operator and `G` an arbitrary
 outside the tool:
 
 - `align_rmsd` = **0.000**, `seq_match_frac` = 1.000, `resnum_offset` = 0.
-- `link_dist` = **34.262 Å** = the independently computed CA(A:111)→CA(B:1) distance,
-  to the digit; `cterm_to_nterm_res` = `A:111->B:1`.
+- *(history, column since retired)* the straight C-term→N-term span came out at
+  **34.262 Å** = the independently computed CA(A:111)→CA(B:1) distance, to the digit,
+  between residues `A:111->B:1`. That agreement was real evidence the transform was
+  applied correctly; the geometry it checked is now covered by `align_rmsd` and the
+  rigid-body re-checks below, and the linker question moved to `linkpath`.
 - Protomer B in the output lands within **0.0011 Å** (PDB rounding) of the
   independently computed `S·binder` — i.e. the **single** transform really was applied
   to the whole dimer.
@@ -290,10 +305,13 @@ outside the tool:
   the tool's Kabsch): protomer A vs the reference binder = **0.0007 Å** direct CA RMSD
   with no refitting; all pairwise distances inside the dimer preserved to
   **1.4e-3 Å** (rigid); A→B is a **180.00°** rotation (the C2 survived the move);
-  `link_dist` identical before and after the transform; the target inside
+  the C-term→N-term span identical before and after the transform; the target inside
   `complex_path` is bit-identical (0.0005 Å) to the untransformed reference.
 - Distributions: `occluded_frac` 0–1, `frac_overlap` 0–0.97, `n_clash` 0–710,
-  `link_dist` 10.4–50.3 Å, `n_dimer_iface_res` 15–51.
+  `n_dimer_iface_res` 15–51. The straight C-term→N-term span, **measured then and
+  reported here as the reason it was retired**, ran **10.4–50.3 Å** over these 40
+  docks: comfortably inside a ~20 aa linker budget on every single one, so it never
+  discriminated. It is `linkpath`'s `straight_ca_dist` now.
 
 **3. Deliberately bad inputs** → `error:` status, **every metric NA**, batch still
 exits 0 (verified with an `OK` control row in the same batch):
@@ -321,7 +339,8 @@ target chain, a non-positive cutoff and `--designs-per-task 0` all refused;
 `gpus_per_task` forced to 0; batching correct (5 designs at 2/task → 3 tasks of
 2/2/1), 9 manifest fields, 5 sub-manifest fields.
 
-**6. Collector**: 34 columns; `error:` rows come back with 0/34 non-NA; `warn:` rows
+**6. Collector**: **32** columns (34 when this was run, before the two linker columns
+were retired); `error:` rows come back with 0/32 non-NA; `warn:` rows
 keep all of them; a design with no TSV collects as `missing`.
 
 **7. The task script** (`dimerfit.sh`, run under a stub prelude): a 1-field manifest

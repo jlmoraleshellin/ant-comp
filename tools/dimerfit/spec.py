@@ -13,8 +13,7 @@ TOOL = Tool(
     name="dimerfit",
     action="update",
     description="Place a C2 dock back into the binder/target frame and measure "
-    "whether the partner protomer occludes the target binding site and whether the "
-    "two protomers can be linked.",
+    "whether the partner protomer occludes the target binding site.",
     default_script=str(Path(__file__).parent / "dimerfit.sh"),
     # No honest default: the dock column differs per campaign, and a wrong one fails
     # silently. The builder refuses the run unless -i names a real column.

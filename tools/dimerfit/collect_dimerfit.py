@@ -45,10 +45,6 @@ plus one <prefix>_<field> column per metric:
     overlap_res         residues that are BOTH C2 interface and epitope, and the
     n_overlap_res       fraction of the epitope they are. LOW is what we want: the
     frac_overlap        dimer interface should sit ADJACENT to the epitope
-    link_dist           CA(C-term of A) -> CA(N-term of B) (A). A ~20 aa linker
-                        reaches roughly 60-70 A fully extended; RECORDED, not gated
-    cterm_to_nterm_res  'A:111->B:1' -- which two residues that was, checkable by
-                        hand against path
 
   occlusion of the target binding site by protomer B (we want this HIGH, i.e.
   opposite-signed to frac_overlap -- do not collapse the two):
@@ -87,7 +83,6 @@ FLOAT_COLUMNS = [
     "seq_match_frac",
     "epitope_com_dist",
     "frac_overlap",
-    "link_dist",
     "clash_frac",
     "min_dist_b_target",
     "occluded_frac",
@@ -119,7 +114,6 @@ STR_COLUMNS = [
     "dimer_iface_com",
     "epitope_com",
     "overlap_res",
-    "cterm_to_nterm_res",
     "occluded_res",
 ]
 RESULT_COLUMNS = FLOAT_COLUMNS + INT_COLUMNS + STR_COLUMNS

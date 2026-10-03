@@ -1,7 +1,6 @@
 ---
 name: linkpath
-description: >-
-  Measures the shortest route between two chain termini that stays OUT of the protein, i.e. the length a flexible linker would really have to span. Load before composing a linkpath run or interpreting its columns. Traps: a straight C-to-N distance is only a lower bound, the obstacle-chain flag is the whole content of the measurement, "no path found" is a result and not a failure, and on a C2 read `path_asymmetry`.
+description: How to run the custom linkpath tool — measuring the shortest route between two chain termini that stays OUT of the protein, i.e. the length a flexible linker would actually have to span. Covers why a straight C-to-N distance is only a lower bound, the obstacle-chain flag that is the whole scientific content of the measurement, the 2.0 Å chain-sized probe vs the prototype's 1.4 Å water probe, the straight_ca_dist bridge to dimerfit's retired link_dist, the "no path found is a RESULT not a failure" contract, the C2 path_asymmetry trust metric, and every column it collects. Load before composing a linkpath run or interpreting its columns.
 ---
 
 # linkpath
@@ -439,7 +438,7 @@ call. **Verified to run against a collected table.**
 
 All of the below was run **locally** (repo `.venv`, gemmi 0.7.5 / numpy 2.5.3). The
 tool has **not** yet been submitted through `sapia run` on Modal or vib; that first
-run is the worker's `-l verification`.
+run is the orchestrator's `-l verification`.
 
 **Test structures** (built from PDB **1A2P**, barnase — 108 resolved aa per chain,
 real coordinates):
