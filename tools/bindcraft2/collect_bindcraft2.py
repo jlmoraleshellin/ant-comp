@@ -375,8 +375,12 @@ def add_collect_bindcraft2_args(parser: ArgumentParser) -> None:
         "otherwise. 'trajectories' takes the hallucinated backbones before any "
         "sequence redesign; 'refolded' takes every scored candidate, rejects "
         "included, with its `outcome` and `failed_filters`; 'ranked' takes only what "
-        "the campaign accepted. Override with -l/--dir-label to keep two stages of "
-        "one run in separate columns.",
+        "the campaign accepted. NOTE -l/--dir-label does NOT separate two stages into "
+        "separate columns: it only selects a leaf dir some run already created, and "
+        "both stages write the same <leaf>_* column names. Collecting a second stage "
+        "into the SAME leaf ADDS ROWS (stage row keys differ), it does not add "
+        "columns. For two stages side by side, give the second one its own leaf via a "
+        "--reuse-campaigns run with a different -l.",
     )
     parser.add_argument(
         "--metrics",

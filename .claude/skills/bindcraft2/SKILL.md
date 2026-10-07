@@ -273,23 +273,39 @@ in its sidecar that its campaigns live in an earlier run's out_dir. Collect foll
 record instead of assuming the two coincide.
 
 ```bash
-# 1. one FULL campaign, reserving table0. Collect its backbones.
-sapia run bindcraft2 R -l traj --hotspots 'A54,A56' --num-designs 10
-sapia collect bindcraft2 R -t table0 -l traj --stage trajectories
+# table0 already holds the target rows. One FULL campaign per ready row.
 
-# 2. the SAME campaign's accepted designs, into table0_bc2. No GPU.
-sapia run bindcraft2 R --table-label bc2 --reuse-campaigns table1:traj
-sapia collect bindcraft2 R -t table1_bc2 --stage ranked
+# 1. the campaigns, reserving table1. Collect their backbones.
+sapia run bindcraft2 R -t table0 -l traj --hotspots 'A54,A56' --num-designs 10
+sapia collect bindcraft2 R -t table1 -l traj --stage trajectories
 
-# 3. the atomium branch off the backbones, reserving table2
-sapia run atomium R -t table0 -i bindcraft2_traj_path --chains-to-design <binder chain>
+# 2. the SAME campaigns' accepted designs, into table1_bc2. Submits nothing, no GPU.
+sapia run bindcraft2 R -t table0 -l bc2 --table-label bc2 --reuse-campaigns table1:traj
+sapia collect bindcraft2 R -t table1_bc2 -l bc2 --stage ranked
+
+# 3. the atomium branch off the BACKBONES table, reserving table2
+sapia run atomium R -t table1 -i bindcraft2_traj_path --chains-to-design <binder chain>
 ```
 
-Pass the **same `-t` the original run used** (here `table0`). The collector maps each
-ready design to a campaign folder by name, and those folders are named after the
-*original* run's design groups — reusing with `-t table1` would hunt for campaigns named
-after backbones and find none. A root campaign needs no `-t` at all; the reuse run reads
-the group names off disk.
+**Two different tables are named here, and confusing them is the trap.** `-t` is the
+table the run *reads ready rows from* — the reuse run passes the **same `-t` the original
+run used** (here `table0`), because the collector maps each ready design to a campaign
+folder by name and those folders are named after the *original* run's design groups.
+The `--reuse-campaigns` argument is a different thing: `TABLE[:LABEL]` where **TABLE is
+the table the earlier run COLLECTED INTO** (`table1`) and **LABEL is that earlier run's
+`-l/--dir-label`** (`traj`) — *not* its `--table-label`. A root campaign needs no `-t` at
+all; the reuse run reads the group names off disk.
+
+**The reuse run needs its own `-l`** (`-l bc2` above), or its columns land as plain
+`bindcraft2_*` and the `bindcraft2_traj_hash` / `bindcraft2_bc2_hash` join described
+below does not exist.
+
+> **Corrected 2026-10-06.** This example previously showed a root run (no `-t`) while its
+> own prose and the lineage diagram described a child run, and it passed
+> `--reuse-campaigns table1:traj` against a run that had reserved `table0`. It also
+> omitted `-l bc2` from the reuse run, and branched atomium off `table0` (the targets)
+> rather than `table1` (the backbones). Verified against `sapia run bindcraft2 --help`
+> and `collect_bindcraft2.py`.
 
 ### The two labels are different things, and one of them is mandatory
 

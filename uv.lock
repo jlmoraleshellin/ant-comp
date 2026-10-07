@@ -1,15 +1,15 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'win32'",
     "python_full_version >= '3.14' and sys_platform == 'emscripten'",
     "python_full_version >= '3.14' and sys_platform != 'emscripten' and sys_platform != 'win32'",
     "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'win32'",
-    "python_full_version < '3.12' and sys_platform == 'win32'",
     "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'emscripten'",
-    "python_full_version < '3.12' and sys_platform == 'emscripten'",
     "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version < '3.12' and sys_platform == 'win32'",
+    "python_full_version < '3.12' and sys_platform == 'emscripten'",
     "python_full_version < '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 
@@ -1031,8 +1031,8 @@ wheels = [
 
 [[package]]
 name = "prosapia"
-version = "0.1.0.post18.dev0+230ea04"
-source = { git = "https://github.com/jlmoraleshellin/prosapia?branch=dev#230ea048dbcaa50f9db49098ca79cd905d3f5955" }
+version = "0.1.0.post19.dev0+4782f10"
+source = { git = "https://github.com/jlmoraleshellin/prosapia?branch=dev#4782f10f85f6c22389379ae0f35952d130616d44" }
 dependencies = [
     { name = "argcomplete" },
     { name = "gemmi" },
