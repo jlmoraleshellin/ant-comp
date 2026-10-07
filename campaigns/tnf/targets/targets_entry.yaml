@@ -1,0 +1,40 @@
+# TNF-alpha cross-reactivity campaign — target entries for Proteina-Complexa
+#
+# Paste the two blocks below into:
+#     Proteina-Complexa/configs/targets/targets_dict.yaml
+# under the existing `target_dict_cfg:` key, keeping the two-space indentation.
+#
+# Epitope: A/C protomer seam, conserved core.
+# Chosen 2026-10-07. Rationale in campaigns/tnf/01_recon_human_mouse.md.
+#
+# Hotspot set (6 residues, identical in human and mouse):
+#     A32  R      A33  A      A145 A
+#     C87  Y      C91  V      C92  N
+#
+# Geometry (checked with scripts/foot.py on 1tnf_human.pdb):
+#     total footprint span      24.6 A   <- a 60-110 aa binder covers ~20-30 A
+#     max distance from centre  14.0 A
+#     spans chains A and C      yes      <- composite epitope across the seam
+#
+# Campaign plan: generate backbones against the HUMAN target only, then design
+# sequences with atomium using tied positions across a human complex and a mouse
+# complex, so one sequence is optimised for both. The mouse entry below is not
+# used for generation; it is kept here because the tied-positions step needs it.
+
+  90_TNFa_HUMAN_xreact:
+    source: tnf_xreact
+    target_filename: 1tnf_human
+    target_path: /home/lpignatti/ant-comp/campaigns/tnf/targets/1tnf_human.pdb
+    target_input: "A6-157,B6-157,C6-157"
+    hotspot_residues: ["A32", "A33", "A145", "C87", "C91", "C92"]
+    binder_length: [60, 110]
+    pdb_id: "1tnf"
+
+  91_TNFa_MOUSE_xreact:
+    source: tnf_xreact
+    target_filename: 2tnf_mouse
+    target_path: /home/lpignatti/ant-comp/campaigns/tnf/targets/2tnf_mouse.pdb
+    target_input: "A9-157,B9-157,C9-157"
+    hotspot_residues: ["A32", "A33", "A145", "C87", "C91", "C92"]
+    binder_length: [60, 110]
+    pdb_id: "2tnf"
