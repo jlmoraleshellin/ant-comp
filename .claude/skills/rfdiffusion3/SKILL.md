@@ -157,6 +157,16 @@ Constraints worth knowing:
   so rather than retrying. Populating it is a one-off
   `foundry install rfd3 --checkpoint-dir /checkpoints` from a container of the tool's image
   (~2.5 GiB, ~3 min).
+- **This repo runs a FORK** (`tools/rfdiffusion3/`, same `name`, so it shadows the built-in and
+  every column is unchanged; since 2026-10-07). Two deviations, both in its module docstrings:
+  (1) the Modal image pins `rc-foundry[all]==0.2.0` + `atomworks[ml]==2.2.1` — unpinned, pip
+  takes atomworks 3.0.0 and every task exits 1 at import with
+  `ImportError: cannot import name 'get_inferred_polymer_bonds'`; bump the two together, never
+  one alone. (2) `$RFD3_CKPT` is ignored when the run's executor is modal (`-e`, which the workstation
+  defaults to `modal`) — the shared `.env` holds a
+  vib cluster path there, whose signature on Modal is `ckpt_path=/data/groups/csb/...` in the
+  task's overrides line. On Modal the checkpoint is auto-discovered from `/checkpoints`; to force
+  one, pass `--ckpt-path /checkpoints/<file>` explicitly. vib behaviour is unchanged.
 - Expect harmless stderr noise: an `atomworks` warning about an unset env var, and a log line showing
   Modal's internal `/__modal/volumes/...` path. Files still land under `/runs`.
 
