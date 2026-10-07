@@ -15,11 +15,10 @@ geometry, side chains and sequence **jointly**, conditioned on a target structur
 and a hotspot list. NVIDIA Open Model License — commercially usable, outputs not
 claimed by NVIDIA.
 
-> **Status: the code is tested, a real run is not.** The manifest builder and the
-> collector have unit tests against a mock output tree (3 jobs → 3 tasks with
-> distinct seeds; 2 jobs × 2 samples → 4 rows, rewards joined, empty job handled).
-> Nothing has yet run on Modal. Treat the first run as a test and start with
-> `--num-jobs 1 --nsamples 2`.
+> **Status: validated end to end on Modal, 2026-10-07.** One job, 2 designs
+> against `90_TNFa_HUMAN_xreact`: exit 0, both rows `OK`, **~2 min on one A100**
+> including model load. Reference run `outputs/20261007_123651_tnf_smoke` on
+> `sapia-runs-luca`. Everything below marked "measured" comes from that run.
 
 ## Verified invocation
 
@@ -157,10 +156,18 @@ Without `--design-prefix`, a row is named
 
 Child rows named `<group>_n_<length>_id_<idx>`, each linked to its job group.
 
-Columns (leaf-prefixed `laproteina_`): `job`, `length`, `sample`, `sample_dir`,
-`task_name`, plus `_status` and `_path` (the complex PDB). If the job wrote a
-`rewards_*.csv`, any column whose name contains reward/score/plddt/ptm/iptm/pae/rmsd
-is lifted in alongside.
+Columns (leaf-prefixed `laproteina_`): `job`, `sample`, `sample_dir`,
+`task_name`, `lpc_n`, plus the chain shape measured from the structure —
+`chains`, `n_chains`, `binder_chain`, `binder_length`, `target_length`,
+`complex_length` — plus `_status` and `_path` (the complex PDB). If the job wrote
+a `rewards_*.csv`, any column containing reward/score/plddt/ptm/iptm/pae/rmsd is
+lifted in alongside.
+
+**Filter on `binder_length`, never on `lpc_n`.** LPC's own `n_<N>` in the sample
+directory name is the **complex** length, target included. Measured: a 1TNF
+trimer target gave `lpc_n` 519 and 535 for binders of **63 and 79** residues
+(456 of target + the binder). A length filter against `lpc_n` would be comparing
+a binder-length threshold to a number four hundred residues too big.
 
 **The structures are the contract; the rewards CSV is a bonus.** A job that wrote
 structures but no CSV still collects cleanly, with the reward columns simply absent.
@@ -180,6 +187,50 @@ self-consistency of the binder back to its generated backbone.
 | `chainsel` / `cms` / `usalign` | `-i laproteina_path`, and `chainsel` the binder out first |
 | `boltz` | not directly — design sequences first |
 
-Confirm the binder's chain id from a collected PDB before composing the atomium
-run; LPC writes the target chains it was given plus the binder, and the binder's
-letter depends on the target's.
+**Measured on the TNF trimer: the binder is chain `D`.** LPC writes the target
+chains it was conditioned on followed by the binder, so the binder is the last
+chain — A/B/C of 152 residues each (the trimer) then D. The collector records
+this per design in `binder_chain`, so read it from the table rather than
+assuming: a target with a different chain count moves the letter.
+
+## Image pins — do not loosen these
+
+LPC installs several dependencies unpinned, and three of them have drifted since
+its 1.0.0 release. Each one breaks the build or the first import, and each pin
+below exists because it cost a cycle:
+
+| Pin | Why |
+| --- | --- |
+| `atomworks==2.2.1` | 3.0.0 (2026-10-05) moved `AtomSelectionStack` from `io/utils/selection.py` to `io/utils/query.py`; LPC's `pdb_utils.py:51` still imports the old path. |
+| `dm-haiku==0.0.13` | 0.0.14+ calls `jax.core.take_current_trace`, absent from the jax 0.4.29 this stack pins. Comes in unpinned via colabdesign. |
+| `libxrender1`, `libxext6` | From LPC's own Dockerfile. openbabel `dlopen`s its format plugins; without libXrender **every** plugin fails, and openbabel then mis-parses its own error output and raises `ValueError: not enough values to unpack`. Surfaces as a Hydra `Error locating target 'gen_dataset.collate_fn'` — a missing system library, three frames from where it shows. |
+
+Two things **not** to add:
+
+- **`rc-foundry[all]`** (build_uv_env.sh step 8) pulls torch 2.14, replacing the
+  pinned 2.7.0; `torch_cluster`/`torch_geometric` are compiled against 2.7.0 and
+  the container dies with a bare `Bus error`. It is not needed.
+- **`--minimal`.** The flag suggests JAX and ColabDesign are optional. They are
+  not: `search/__init__.py` imports every algorithm eagerly, including
+  `sequence_hallucination`, whose module body does `import jax` and
+  `from colabdesign import mk_afdesign_model`. The import fires even with
+  `search.algorithm=single-pass` and `reward_model=null`. The **libraries** are
+  required; the AF2 **weights** are not.
+
+The image ends with two import checks (`proteinfoundation.search`, and
+`gen_dataset.collate_fn`). Keep them. Both failures above first appeared on a GPU
+task; as build steps they fail in minutes on a CPU builder instead.
+
+## Submit trap: "Submitting N task(s)" is printed even when the build failed
+
+prosapia prints
+
+```
+Submitting 1 task(s) to Modal app 'sapia-laproteina' (gpu=A100, ...)
+```
+
+**after** a `modal.exception.ImageBuildError`, because the two come from
+different code paths and stdout/stderr interleave. Do not treat that line as
+proof a task exists. Check for `ImageBuildError` in the submit output, or that
+the log dir's `.exit` is newer than the submit. Cost 30 minutes of polling a task
+that was never created — twice.

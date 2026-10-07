@@ -8,3 +8,7 @@ wheels/
 
 # Virtual environments
 .venv
+
+# local backups made while debugging
+*.bak
+*.bak2

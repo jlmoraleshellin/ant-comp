@@ -53,7 +53,14 @@ RESOURCES = {"gpu": "A100", "cpu": 8, "memory": "32G", "timeout": "04:00:00"}
 def image() -> modal.Image:
     return (
         modal.Image.debian_slim(python_version="3.12")
-        .apt_install("git", "build-essential", "wget")
+        # libxrender1/libxext6 are what LPC's own Dockerfile installs, and they
+        # are not optional: openbabel (pulled in by atomworks[openbabel]) loads
+        # its format plugins via dlopen, and without libXrender.so.1 every plugin
+        # fails. openbabel's pybel then tries to *parse* its own error output and
+        # dies with "ValueError: not enough values to unpack", which surfaces as
+        # an unrelated-looking failure importing gen_dataset. A missing system
+        # library, reported as a tuple-unpacking bug three frames away.
+        .apt_install("git", "build-essential", "wget", "libxrender1", "libxext6")
         .run_commands(
             f"git clone --depth 1 --branch {LPC_REF} {LPC_REPO} {LPC_HOME}",
             # Mirrors build_uv_env.sh steps 3-6, minus the --minimal skips.
@@ -63,20 +70,79 @@ def image() -> modal.Image:
             f"pip install torch_geometric torch_scatter torch_sparse torch_cluster "
             f"-f {PYG_FIND_LINKS}",
             "pip install graphein==1.7.7 --no-deps",
-            "pip install 'atomworks[ml,openbabel,dev]'",
+            # PINNED, and it must stay pinned. LPC's build script installs
+            # atomworks unpinned; 3.0.0 (released 2026-10-05) moved
+            # AtomSelectionStack from atomworks/io/utils/selection.py to
+            # .../query.py, while LPC's pdb_utils.py:51 -- unchanged since its
+            # 1.0.0 release -- still imports the old path. A fresh unpinned build
+            # therefore dies at import with
+            #   ImportError: cannot import name 'AtomSelectionStack'
+            # before the model ever loads. 2.2.1 is the last release with the old
+            # layout. The sibling `rf3` package has the identical stale import, so
+            # pinning fixes both; patching LPC's source would not.
+            "pip install 'atomworks[ml,openbabel,dev]==2.2.1'",
             "pip install biotite==1.6.0",
+            # JAX + ColabDesign are NOT optional, despite what `--minimal`
+            # suggests. `proteina.py` imports `search.search_factory`, and
+            # `search/__init__.py` imports every algorithm eagerly -- including
+            # `sequence_hallucination`, whose module body does
+            #     import jax
+            #     from colabdesign import mk_afdesign_model
+            # So the import happens even with search.algorithm=single-pass and
+            # reward_model=null, and a --minimal build dies at
+            #     ModuleNotFoundError: No module named 'jax'
+            # before loading the model. Mirrors build_uv_env.sh's full install.
+            #
+            # The LIBRARIES are needed; the AF2 WEIGHTS are not. Nothing
+            # constructs an AF2 model while the reward model is null, so no
+            # parameter download and no AF2_DIR.
+            "pip install colabdesign==1.1.1 alphafold-colabfold==2.3.7",
+            # dm-haiku comes in unpinned via colabdesign and has drifted past the
+            # jax this stack pins. 0.0.14+ does
+            #     take_current_trace = jax.core.take_current_trace
+            # in haiku/_src/dot.py, an attribute jax 0.4.29 does not have, so the
+            # colabdesign import dies with
+            #     AttributeError: module 'jax.core' has no attribute 'take_current_trace'
+            # 0.0.13 (2024-10) is the newest release without it. Installed after
+            # colabdesign so it wins, and before jax so the pins settle together.
+            "pip install dm-haiku==0.0.13",
+            f"pip install -e {LPC_HOME}/community_models/colabdesign",
+            "pip install jaxlib==0.4.29+cuda12.cudnn91 "
+            "-f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html",
+            "pip install 'jax[cuda12]==0.4.29' "
+            "-f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html",
+            "pip install flax==0.9.0 --no-deps",
             # Fail the build, not someone's run. torch_cluster in particular is easy
             # to lose: nothing imports it by name, but the model's radius_graph call
             # is a torch-cluster binding, so without it every task dies at model
             # construction with a confusing error.
             "python -c \"import torch, torch_cluster, torch_geometric; "
             "print('torch', torch.__version__)\"",
+            # Import the real entry path, not just the obvious packages: this is
+            # the chain that failed twice (atomworks symbol, then jax).
+            "python -c \"from proteinfoundation.search import SinglePassGeneration; "
+            "import jax; print('search import OK, jax', jax.__version__)\"",
+            # The dataset module too: Hydra instantiates `collate_fn` by dotted
+            # path and reports only \"Error locating target\" when the import
+            # inside it fails, so a broken dep here is invisible until a GPU task
+            # resolves the config. Import it at build time where it is loud.
+            "python -c \"from proteinfoundation.datasets.gen_dataset import collate_fn, GenDataset; "
+            "print('dataset import OK')\"",
             "complexa --help > /dev/null",
         )
         .env(
             {
                 "COMPLEXA_HOME": LPC_HOME,
                 "LPC_ASSETS": ASSETS_DIR,
+                # `complexa init <uv|docker>` normally writes env.sh, which sets
+                # this. `generate` is not in LPC's init-exempt command list, so
+                # without it every task stops at "Environment not initialized"
+                # before touching a GPU.
+                "COMPLEXA_INIT": "uv",
+                # Without this the task script leaves the config's relative
+                # `./ckpts` in place, which does not exist in the clone — the run
+                # would die looking for a checkpoint next to the source.
+                "COMPLEXA_CKPT_DIR": CKPT_DIR,
                 # LPC's configs reference these through ${oc.env:...}; Hydra fails
                 # at config-resolution time if one is missing, so set them even
                 # where this tool never reaches the code that reads them.

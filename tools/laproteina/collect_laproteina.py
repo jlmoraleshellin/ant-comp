@@ -43,6 +43,49 @@ _SAMPLE_RE = re.compile(r"^job_(?P<job>\d+)_n_(?P<length>\d+)_id_(?P<idx>\d+)(?P
 _REWARD_HINTS = ("reward", "score", "plddt", "ptm", "iptm", "pae", "rmsd")
 
 
+def _chain_shape(pdb: Path) -> dict[str, Any]:
+    """Chain ids, residue counts, and which chain is the binder.
+
+    LPC writes the target chains it was conditioned on **followed by** the
+    designed binder, so the binder is the last chain by first appearance --
+    verified on the first real run: a 1TNF trimer came back as A/B/C of 152
+    residues each plus a D of 63, and 3*152 + 63 == the 519 in the sample's own
+    directory name.
+
+    Deliberately stdlib-only: this runs in the workstation image, which carries
+    prosapia's dependencies and nothing else, so no gemmi/biotite here.
+    """
+    order: list[str] = []
+    residues: dict[str, set[str]] = {}
+    try:
+        with pdb.open() as fh:
+            for line in fh:
+                if not line.startswith(("ATOM  ", "HETATM")):
+                    continue
+                ch = line[21]
+                # resseq + icode identifies a residue without assuming numbering
+                key = line[22:27]
+                if ch not in residues:
+                    residues[ch] = set()
+                    order.append(ch)
+                residues[ch].add(key)
+    except OSError as e:
+        print(f"  (unreadable pdb {pdb.name}: {e})")
+        return {}
+
+    if not order:
+        return {}
+    binder = order[-1]
+    return {
+        "chains": ",".join(order),
+        "n_chains": len(order),
+        "binder_chain": binder,
+        "binder_length": len(residues[binder]),
+        "target_length": sum(len(residues[c]) for c in order[:-1]),
+        "complex_length": sum(len(v) for v in residues.values()),
+    }
+
+
 def _run_meta(out_dir: Path) -> dict:
     """The sidecar the run wrote. Absent on a hand-made out_dir; treat as empty."""
     meta_path = out_dir / ".meta.json"
@@ -149,11 +192,16 @@ def collect_laproteina(ctx: CollectCtx) -> CollectEach:
 
             data: dict[str, Any] = {
                 "job": int(m.group("job")),
-                "length": int(m.group("length")),
+                # LPC's own `n_<N>` is the COMPLEX length (target + binder), not
+                # the binder's. Keeping it under that name invited exactly the
+                # wrong filter, so it is recorded as what it is and the real
+                # binder length is measured from the structure below.
+                "lpc_n": int(m.group("length")),
                 "sample": int(m.group("idx")),
                 "sample_dir": sdir.name,
                 "task_name": task_name,
             }
+            data.update(_chain_shape(pdbs[0]))
             data.update(_reward_row(rewards, sdir.name))
 
             # Strip LPC's redundant job_<id>_ prefix: the design group name already

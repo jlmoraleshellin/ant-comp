@@ -64,6 +64,8 @@ class LaProteinaArgs(CommonArgs):
     config: str
     seed: int | None
     design_prefix: str | None
+    search: str
+    rewards: bool
     set: list[str]
 
 
@@ -122,6 +124,24 @@ def add_run_laproteina_args(parser: ArgumentParser) -> None:
         "something shorter (e.g. 'tnfh') to keep row names readable.",
     )
     parser.add_argument(
+        "--search",
+        type=str,
+        default="single-pass",
+        choices=["single-pass", "best-of-n", "beam-search", "fk-steering", "mcts"],
+        help="Inference-time search. Defaults to single-pass (no search), because "
+        "every other algorithm scores candidates with a reward model and the "
+        "--minimal image has none installed. The shipped config's default is "
+        "best-of-n; turning it back on needs --rewards AND an image built with "
+        "JAX/ColabDesign.",
+    )
+    parser.add_argument(
+        "--rewards",
+        action="store_true",
+        help="Keep the config's reward model (AF2) instead of setting it to null. "
+        "Only meaningful on a full (non---minimal) image with AF2_DIR set; "
+        "otherwise Hydra fails resolving ${oc.env:AF2_DIR} before anything runs.",
+    )
+    parser.add_argument(
         "--set",
         action="append",
         default=[],
@@ -177,6 +197,20 @@ def build_laproteina_manifest(
         base_overrides.append(
             f"generation.dataloader.dataset.nres.nsamples={args.nsamples}"
         )
+
+    # The shipped binder config turns on inference-time search (`best-of-n`) and
+    # an AF2 reward model (`af_params_dir: ${oc.env:AF2_DIR}`). Neither can work
+    # in the --minimal image: ColabDesign and JAX are not installed, and AF2_DIR
+    # is unset, so Hydra fails at config resolution before the model ever loads.
+    # Turn both off by default. `initialize_reward_model` handles a null cleanly
+    # (logs "No reward model configured" and returns None).
+    #
+    # These go BEFORE --set so a caller running a full image can switch them back
+    # on; with Hydra's ++, the later override wins.
+    base_overrides.append(f"generation.search.algorithm={args.search}")
+    if not args.rewards:
+        base_overrides.append("generation.reward_model=null")
+
     base_overrides.extend(args.set)
 
     samples_root = volume_path(ctx.out_dir) / SAMPLES_DIRNAME

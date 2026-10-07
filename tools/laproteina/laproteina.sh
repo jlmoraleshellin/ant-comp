@@ -75,6 +75,12 @@ fi
 # unique within a run.
 find ./inference -maxdepth 1 -name "results_*_${LPC_JOB_ID}.csv" -print -delete 2>/dev/null || true
 
+# Hydra swallows the real cause of an instantiation failure, reporting only
+# "Error locating target '<dotted.path>'" with no hint as to which import inside
+# that module actually failed. On a remote task that is the difference between a
+# diagnosis and another build cycle, so always ask for the chained traceback.
+export HYDRA_FULL_ERROR=1
+
 # LPC_OVERRIDES is intentionally unquoted: it is a space-separated list of Hydra
 # tokens (++key=value) that must each become its own argv entry.
 "$LPC_BIN" generate "$LPC_CONFIG" --job-id "$LPC_JOB_ID" --verbose $LPC_OVERRIDES
