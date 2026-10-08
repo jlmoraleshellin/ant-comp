@@ -21,7 +21,7 @@ import modal
 # branch. Bump deliberately: HEAD of `pure_wo_jit`, 2026-09-25 "Update add_utils.py".
 ATOMIUM_REPO = "github.com/AndreiSokolovskii/develop_atomium.git"
 ATOMIUM_BRANCH = "pure_wo_jit"
-ATOMIUM_COMMIT = "292e29c4e3372633834408eef969ae17a6c2f962"
+ATOMIUM_COMMIT = "dee5a4d67ae02293cee59f86c86085c8fa11879d"
 
 TORCH_VERSION = "2.11.0"
 PYG_WHEELS = f"https://data.pyg.org/whl/torch-{TORCH_VERSION}+cu128.html"
