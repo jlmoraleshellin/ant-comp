@@ -1,0 +1,118 @@
+# BoltzGen's FULL transitive dependency closure, pinned. Generated, do not hand-edit.
+#
+# Produced 2026-10-08 with:
+#   printf 'boltzgen @ git+https://github.com/HannesStark/boltzgen@a07fea1153111ef453aaea7a15697ee05de9291f\ntorch==2.10.0\n' > req.in
+#   uv pip compile req.in --python-version 3.12 \
+#       --python-platform x86_64-manylinux_2_28 \
+#       --exclude-newer 2026-10-08T00:00:00Z --no-annotate --no-header
+#   (then the `boltzgen @ git+...` line was removed -- modal_image.py installs the
+#    checkout itself with --no-deps so /opt/boltzgen/example stays on disk.)
+#
+# Why torch==2.10.0 is forced: see the modal_image.py docstring. Short version --
+# boltzgen depends on cuequivariance_ops_cu12 (a CUDA-12 build) and its own
+# Dockerfile is CUDA 12.2/cu121, but `torch>=2.4.1` is unbounded and an
+# unconstrained resolve on 2026-10-08 gives torch 2.14.1, whose PyPI wheel drags in
+# the CUDA-13 runtime (nvidia-cudnn-cu13, nvidia-nccl-cu13). 2.10.0 is the newest
+# release whose default PyPI wheel still carries nvidia-*-cu12.
+#
+# NOTHING HERE HAS BEEN EXECUTED. This pin is reproducible, not verified.
+aiohappyeyeballs==2.7.1
+aiohttp==3.14.4
+aiosignal==1.4.0
+antlr4-python3-runtime==4.9.3
+anyio==4.15.1
+attrs==26.1.0
+biopython==1.88
+biotite==1.7.1
+biotraj==1.2.2
+certifi==2026.7.22
+charset-normalizer==3.5.2
+click==8.5.0
+cloudpickle==3.1.2
+contourpy==1.4.0
+cuda-bindings==12.9.4
+cuda-pathfinder==1.8.3
+cuequivariance==0.12.0
+cuequivariance-ops-cu12==0.11.0
+cuequivariance-ops-torch-cu12==0.11.0
+cuequivariance-torch==0.12.0
+cycler==0.12.1
+edit-distance==1.0.9
+einops==0.8.2
+einx==0.4.3
+filelock==4.0.12
+fonttools==4.66.1
+frozendict==2.4.7
+frozenlist==1.8.0
+fsspec==2026.9.0
+gemmi==0.7.5
+h11==0.16.0
+hf-xet==1.7.0
+httpcore2==2.13.1
+httpx2==2.13.1
+huggingface-hub==2.1.1
+hydra-core==1.3.7
+hydride==1.2.3
+idna==3.20
+jinja2==3.1.6
+joblib==1.6.0
+kiwisolver==1.5.1
+lightning-utilities==0.15.3
+llvmlite==0.47.0
+logomaker==0.8.7
+markupsafe==3.0.4
+mashumaro==3.23
+matplotlib==3.11.2
+mpmath==1.3.0
+msgpack==1.2.3
+multidict==6.9.1
+narwhals==2.26.0
+networkx==3.7
+numba==0.65.1
+numpy==2.4.6
+nvidia-cublas-cu12==12.8.4.1
+nvidia-cuda-cupti-cu12==12.8.90
+nvidia-cuda-nvrtc-cu12==12.8.93
+nvidia-cuda-runtime-cu12==12.8.90
+nvidia-cudnn-cu12==9.10.2.21
+nvidia-cufft-cu12==11.3.3.83
+nvidia-cufile-cu12==1.13.1.3
+nvidia-curand-cu12==10.3.9.90
+nvidia-cusolver-cu12==11.7.3.90
+nvidia-cusparse-cu12==12.5.8.93
+nvidia-cusparselt-cu12==0.7.1
+nvidia-ml-py==13.615.71
+nvidia-nccl-cu12==2.27.5
+nvidia-nvjitlink-cu12==12.8.93
+nvidia-nvshmem-cu12==3.4.5
+nvidia-nvtx-cu12==12.8.90
+omegaconf==2.3.1
+opt-einsum==3.4.0
+packaging==26.3
+pandas==3.0.6
+pdbeccdutils==2.0.0
+pillow==12.3.0
+platformdirs==4.12.4
+propcache==0.5.4
+pydssp==0.9.1
+pyparsing==3.3.3
+python-dateutil==2.9.0.post0
+pytorch-lightning==2.6.6
+pyyaml==6.0.3
+rdkit==2026.3.6
+requests==2.34.2
+scikit-learn==1.9.1
+scipy==1.18.1
+setuptools==84.0.0
+six==1.17.0
+sympy==1.14.0
+threadpoolctl==3.7.0
+torch==2.10.0
+torchmetrics==1.9.0
+tqdm==4.70.1
+triton==3.6.0
+truststore==0.10.4
+typing-extensions==4.16.0
+urllib3==2.8.0
+uv==0.12.23
+yarl==1.25.1
