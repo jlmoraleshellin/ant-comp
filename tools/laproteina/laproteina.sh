@@ -22,11 +22,40 @@ sapia_activate SAPIA_ACTIVATE_LAPROTEINA
 # Manifest columns (tab-separated). Names are prefixed to stay clear of bash's own
 # special variables — a plain assignment to one of those fails under `set -e` with
 # no output at all. See the trap in the authoring-a-tool skill.
-LPC_NAME=$(echo "$SAPIA_LINE" | cut -f1)
-LPC_CONFIG=$(echo "$SAPIA_LINE" | cut -f2)
-LPC_JOB_ID=$(echo "$SAPIA_LINE" | cut -f3)
-LPC_OVERRIDES=$(echo "$SAPIA_LINE" | cut -f4)
-LPC_DEST=$(echo "$SAPIA_LINE" | cut -f5)
+# The manifest can still be invisible to this container when the task starts.
+# Every volume mount is created with allow_background_commits=True, so although
+# the submitter publishes the manifest server-side before spawning, a task that
+# starts immediately (warm image, no build to wait through) can read the file
+# through a mount view that has not caught up -- getting a sparse read, which
+# shows up as the prelude's "ignored null byte in input" and an empty field 1.
+#
+# Observed: of two otherwise identical runs submitted a minute apart, the first
+# read a null-filled manifest and died, the second read it correctly. So: if the
+# prelude's line looks empty, re-read our own line straight from $MANIFEST,
+# backing off, before giving up.
+_lpc_read_line() {
+    local i line
+    line="$SAPIA_LINE"
+    for i in 1 2 3 4 5 6; do
+        # tr -d '\0' so a partially-materialised read cannot smuggle NULs into
+        # the variable and silently truncate every field.
+        line=$(sed -n "${SAPIA_TASK_ID}p" "${MANIFEST:?}" 2>/dev/null | tr -d '\0')
+        [ -n "$(printf '%s' "$line" | cut -f1)" ] && { printf '%s' "$line"; return 0; }
+        echo "  manifest line $SAPIA_TASK_ID not readable yet (attempt $i), waiting ${i}0s..." >&2
+        sleep "${i}0"
+    done
+    printf '%s' "$line"
+}
+
+LPC_NAME=$(printf '%s' "$SAPIA_LINE" | tr -d '\0' | cut -f1)
+if [ -z "$LPC_NAME" ]; then
+    SAPIA_LINE=$(_lpc_read_line)
+    LPC_NAME=$(printf '%s' "$SAPIA_LINE" | cut -f1)
+fi
+LPC_CONFIG=$(printf '%s' "$SAPIA_LINE" | cut -f2)
+LPC_JOB_ID=$(printf '%s' "$SAPIA_LINE" | cut -f3)
+LPC_OVERRIDES=$(printf '%s' "$SAPIA_LINE" | cut -f4)
+LPC_DEST=$(printf '%s' "$SAPIA_LINE" | cut -f5)
 
 LPC_HOME=${COMPLEXA_HOME:?set COMPLEXA_HOME to the Proteina-Complexa checkout}
 LPC_BIN=${COMPLEXA_BIN:-complexa}
@@ -80,6 +109,14 @@ find ./inference -maxdepth 1 -name "results_*_${LPC_JOB_ID}.csv" -print -delete 
 # that module actually failed. On a remote task that is the difference between a
 # diagnosis and another build cycle, so always ask for the chained traceback.
 export HYDRA_FULL_ERROR=1
+
+# The pair representation is O(L^2) per sample and a binder-on-trimer complex is
+# ~520 residues, so a full batch is the memory bottleneck, not the model. Measured
+# on a 40 GiB A100: batch 2 is comfortable, batch 16 dies asking for 4.86 GiB with
+# 2.93 free. expandable_segments reclaims the "reserved but unallocated" slack the
+# allocator otherwise strands (8.08 GiB of it in that failure) -- it does not
+# raise the ceiling, so keep --set generation.dataloader.batch_size sane too.
+export PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
 
 # LPC_OVERRIDES is intentionally unquoted: it is a space-separated list of Hydra
 # tokens (++key=value) that must each become its own argv entry.
