@@ -1,0 +1,366 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Progress ledger</title>
+<style>
+:root{
+  --bg:#fafaf9;--panel:#fff;--ink:#1c1917;--mute:#78716c;--line:#e7e5e4;--rail:#c4bfba;
+  --ok:#15803d;--ok-bg:#dcfce7;--bad:#b91c1c;--bad-bg:#fee2e2;--run:#b45309;--run-bg:#fef3c7;
+  --part:#c2410c;--part-bg:#ffedd5;--idle:#78716c;--idle-bg:#f5f5f4;--accent:#1d4ed8;--hit:#fef9c3;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#171412;--panel:#1f1b19;--ink:#f5f5f4;--mute:#a8a29e;--line:#34302d;--rail:#4a4540;
+  --ok:#4ade80;--ok-bg:#14301f;--bad:#f87171;--bad-bg:#3b1618;--run:#fbbf24;--run-bg:#3a2a0b;
+  --part:#fb923c;--part-bg:#3b200d;--idle:#a8a29e;--idle-bg:#2a2623;--accent:#93c5fd;--hit:#3d3708;
+}}
+*{box-sizing:border-box}
+html{color-scheme:light dark}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
+main,header,.toolbar,footer{max-width:62rem;margin:0 auto;padding:0 16px}
+header{padding-top:24px}
+h1{font-size:1.25rem;margin:0 0 .25rem;font-weight:650;overflow-wrap:anywhere}
+.goal{margin:0 0 1rem;color:var(--mute)}
+code,pre,.mono{font-family:var(--mono);font-size:.85em}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(8rem,1fr));gap:8px;margin:0 0 12px}
+.stat{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px 12px}
+.stat b{display:block;font-size:1.5rem;line-height:1.2;font-variant-numeric:tabular-nums}
+.stat span{color:var(--mute);font-size:.8rem}
+.facts{display:grid;grid-template-columns:max-content 1fr;gap:2px 14px;margin:0 0 8px;font-size:.9rem}
+.facts dt{color:var(--mute)}.facts dd{margin:0;overflow-wrap:anywhere}
+.facts dd.alert{color:var(--bad)}
+header details{font-size:.85rem;color:var(--mute);margin-bottom:4px}
+header summary{cursor:pointer}
+.banner{margin:12px 0;padding:8px 12px;border:1px solid var(--bad);background:var(--bad-bg);color:var(--bad);border-radius:8px;font-size:.85rem}
+.toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding-top:14px;padding-bottom:10px;border-top:1px solid var(--line);margin-top:12px}
+.toolbar button{font:inherit;font-size:.85rem;padding:3px 10px;border:1px solid var(--line);background:var(--panel);color:var(--ink);border-radius:6px;cursor:pointer}
+.toolbar button[aria-pressed=true]{border-color:var(--accent);color:var(--accent)}
+.toolbar button:hover{border-color:var(--mute)}
+.legend{margin-left:auto;color:var(--mute);font-size:.78rem}
+main{padding-bottom:48px}
+.empty{color:var(--mute);padding:24px 0}
+
+/* tree */
+.node{position:relative;padding-left:28px}
+.node::before{content:"";position:absolute;left:9px;top:0;bottom:0;border-left:2px solid var(--rail)}
+.node.first::before{top:14px}
+.node.last::before{bottom:auto;height:14px}
+.node.first.last::before{display:none}
+.node.first.last.solo{padding-bottom:0}
+.row{display:flex;align-items:flex-start;gap:4px;min-height:28px}
+.dot{position:absolute;left:0;top:4px;width:20px;height:20px;border-radius:50%;display:grid;place-items:center;
+  font-size:11px;font-weight:700;border:2px solid var(--idle);background:var(--idle-bg);color:var(--idle);z-index:1}
+.dot.done{border-color:var(--ok);background:var(--ok-bg);color:var(--ok)}
+.dot.failed{border-color:var(--bad);background:var(--bad-bg);color:var(--bad)}
+.dot.partial{border-color:var(--part);background:var(--part-bg);color:var(--part)}
+.dot.running{border-color:var(--run);background:var(--run-bg);color:var(--run);animation:pulse 1.6s ease-in-out infinite}
+@keyframes pulse{50%{box-shadow:0 0 0 4px transparent;opacity:.6}}
+@media (prefers-reduced-motion:reduce){.dot.running{animation:none}}
+.caret{flex:none;width:22px;height:28px;border:0;background:none;color:var(--mute);cursor:pointer;font-size:.8rem;padding:0}
+.caret:hover{color:var(--ink)}
+.caret.none{visibility:hidden;cursor:default}
+.head{flex:1;min-width:0;display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 8px;text-align:left;font:inherit;color:inherit;
+  background:none;border:0;border-radius:6px;padding:3px 8px;cursor:pointer}
+.head:hover{background:var(--panel)}
+.node[data-open=true]>.row .head{background:var(--panel)}
+.num{color:var(--mute);font-variant-numeric:tabular-nums;min-width:1.6em;text-align:right}
+.tool{font-weight:600}
+.chip{font-family:var(--mono);font-size:.78rem;padding:0 6px;border-radius:4px;border:1px solid var(--line);background:var(--panel);color:var(--mute)}
+.chip.new{color:var(--accent);border-color:var(--accent)}
+.chip.lab{font-family:inherit;font-style:italic}
+.headline{color:var(--mute);font-size:.9rem;overflow-wrap:anywhere}
+.tag{font-size:.75rem;padding:0 6px;border-radius:999px}
+.tag.warn{color:var(--run);background:var(--run-bg)}
+.tag.fork{color:var(--accent);border:1px solid var(--accent)}
+.tag.hidden{color:var(--mute);border:1px dashed var(--mute)}
+.detail{margin:2px 0 10px 26px;padding:10px 14px;background:var(--panel);border:1px solid var(--line);border-radius:8px}
+.detail dl{display:grid;grid-template-columns:8.5rem 1fr;gap:5px 12px;margin:0;font-size:.88rem}
+.detail dt{color:var(--mute)}
+.detail dd{margin:0;overflow-wrap:anywhere}
+.detail dd.nil{color:var(--mute)}
+.detail dd.dev{color:var(--run)}
+.detail pre{margin:0;white-space:pre-wrap;word-break:break-all;padding:6px 8px;background:var(--bg);border:1px solid var(--line);border-radius:6px}
+.detail button.copy{font:inherit;font-size:.75rem;margin-top:4px;padding:1px 8px;border:1px solid var(--line);background:none;color:var(--mute);border-radius:4px;cursor:pointer}
+.detail a{color:var(--accent)}
+.detail ul{margin:0;padding-left:1.1em}
+.after[hidden]{display:none}
+.branches{margin-left:28px}
+.branch{position:relative}
+.branch::before{content:"";position:absolute;left:-19px;top:0;width:19px;height:14px;border-left:2px solid var(--rail);border-bottom:2px solid var(--rail);border-bottom-left-radius:8px}
+.branch:not(:last-child)::after{content:"";position:absolute;left:-19px;top:14px;bottom:0;border-left:2px solid var(--rail)}
+.node.target>.row .head{background:var(--hit)}
+.node.dim>.row{opacity:.35}
+@media (max-width:560px){.detail dl{grid-template-columns:1fr}.legend{margin-left:0}}
+footer{color:var(--mute);font-size:.78rem;padding-bottom:32px}
+</style>
+</head>
+<body>
+
+<!-- DATA: one JSON object per line. First key decides the kind: {"summary":…} once, {"id":…} per step.
+     Lines starting with # are ignored. Edit lines; never touch the markup or the script below. -->
+<script type="text/plain" id="ledger">
+{"summary":{"basename":"{{BASENAME}}"}}
+# end-nodes
+</script>
+
+<header>
+  <h1 id="title"></h1>
+  <p class="goal" id="goal"></p>
+  <div class="stats" id="stats"></div>
+  <dl class="facts" id="facts"></dl>
+  <details id="rundirs"><summary>Run dirs</summary><ul id="rundirlist"></ul></details>
+  <div id="banners"></div>
+</header>
+<div class="toolbar">
+  <button id="open-all" type="button">Open all details</button>
+  <button id="close-all" type="button">Close all details</button>
+  <button id="problems" type="button" aria-pressed="false" title="Dim every step that has no failure, partial result or deviation">Highlight problems</button>
+  <span class="legend">✓ done · ◐ partial · ✕ failed · ◔ running · ⚠ deviations · +table = new table</span>
+</div>
+<main id="tree"></main>
+<footer id="foot"></footer>
+
+<script>
+(function () {
+  "use strict";
+  var $ = function (id) { return document.getElementById(id); };
+  function el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
+  }
+  var has = function (v) { return v != null && v !== ""; };
+
+  // ---- parse -------------------------------------------------------------
+  var summary = {}, nodes = [], problems = [];
+  $("ledger").textContent.split("\n").forEach(function (line) {
+    line = line.trim();
+    if (!line || line[0] === "#") return;
+    try {
+      var o = JSON.parse(line);
+      if (o.summary) summary = o.summary;
+      else if (o.id != null) nodes.push(o);
+      else problems.push("Ledger line has neither \"summary\" nor \"id\" and was ignored: " + line.slice(0, 80));
+    } catch (err) { problems.push("Ledger line is not valid JSON and was dropped (" + err.message + "): " + line.slice(0, 80) + "…"); }
+  });
+  var byId = {}, kids = {}, roots = [];
+  nodes.forEach(function (n) {
+    if (byId[n.id]) problems.push("step " + n.id + " appears twice; the later line is dropped");
+    else byId[n.id] = n;
+  });
+  nodes = nodes.filter(function (n) { return byId[n.id] === n; });
+  nodes.sort(function (a, b) { return a.id - b.id; });
+  nodes.forEach(function (n) {
+    if (has(n.parent) && byId[n.parent] && n.parent !== n.id) (kids[n.parent] = kids[n.parent] || []).push(n);
+    else {
+      if (has(n.parent)) problems.push("step " + n.id + " names parent " + n.parent + ", which is not in this ledger; shown as a root");
+      roots.push(n);
+    }
+  });
+
+  // ---- header ------------------------------------------------------------
+  var base = summary.basename || "ledger";
+  document.title = "Ledger · " + base;
+  $("title").textContent = base;
+  $("goal").textContent = has(summary.goal) ? summary.goal : "";
+  var c = summary.counts || {};
+  var failed = nodes.filter(function (n) { return n.status === "failed"; }).length;
+  [["generated", c.generated], ["selected", c.selected], ["passing gates", c.passing]].forEach(function (p) {
+    var s = el("div", "stat"); s.appendChild(el("b", null, has(p[1]) ? String(p[1]) : "—")); s.appendChild(el("span", null, p[0])); $("stats").appendChild(s);
+  });
+  var st = el("div", "stat");
+  st.appendChild(el("b", null, String(nodes.length)));
+  st.appendChild(el("span", null, "steps" + (failed ? " · " + failed + " failed" : "")));
+  $("stats").appendChild(st);
+  [["Live table", summary.live_table], ["Gates", summary.gates], ["In flight", summary.in_flight], ["Blocked", summary.blocked]].forEach(function (p) {
+    if (!has(p[1])) return;
+    $("facts").appendChild(el("dt", null, p[0]));
+    $("facts").appendChild(el("dd", p[0] === "Blocked" && !/^(nothing|none|—|-)\b/i.test(p[1]) ? "alert" : null, p[1]));
+  });
+  var rds = summary.run_dirs || [];
+  if (!rds.length) $("rundirs").hidden = true;
+  rds.forEach(function (r) { var li = el("li"); li.appendChild(el("code", null, r)); $("rundirlist").appendChild(li); });
+  problems.forEach(function (p) { $("banners").appendChild(el("div", "banner", p)); });
+  $("foot").textContent = "A transcript of what the thinker reported" + (has(summary.updated) ? ", last updated " + summary.updated : "") +
+    ". The tracker verifies nothing. Science: campaigns/" + base + ".md";
+
+  // ---- tree --------------------------------------------------------------
+  var GLYPH = { done: "✓", failed: "✕", partial: "◐", running: "◔" };
+  var all = [];   // {n, node, detail, head, after, caret}
+
+  function isProblem(n) {
+    return n.status === "failed" || n.status === "partial" || devWarn(n);
+  }
+  function devWarn(n) {
+    if (!has(n.deviations)) return n.status === "done" || n.status === "partial" || n.status === "failed";
+    return String(n.deviations).trim().toLowerCase() !== "none";
+  }
+
+  function field(dl, label, value, cls) {
+    dl.appendChild(el("dt", null, label));
+    var dd = el("dd", has(value) ? cls : "nil", has(value) ? value : "—");
+    dl.appendChild(dd);
+    return dd;
+  }
+
+  function buildDetail(n) {
+    var d = el("div", "detail"); d.id = "d" + n.id; d.hidden = true;
+    var dl = el("dl");
+    field(dl, "Why", n.why);
+    dl.appendChild(el("dt", null, "Command"));
+    var dd = el("dd");
+    if (has(n.command)) {
+      dd.appendChild(el("pre", null, n.command));
+      var b = el("button", "copy", "copy"); b.type = "button";
+      b.addEventListener("click", function () {
+        var done = function () { b.textContent = "copied"; setTimeout(function () { b.textContent = "copy"; }, 1200); };
+        try { navigator.clipboard.writeText(n.command).then(done, function () {}); } catch (e) {}
+      });
+      dd.appendChild(b);
+    } else { dd.className = "nil"; dd.textContent = "—"; }
+    dl.appendChild(dd);
+    var tbl = has(n.reads) && n.reads !== n.table ? n.reads + " → " + (n.table || "—") : n.table;
+    field(dl, "Table", tbl);
+    field(dl, "Rows", n.rows);
+    field(dl, "Status counts", n.status_counts);
+    field(dl, "Failed tasks", n.failed);
+    field(dl, "Filter", n.filter);
+    field(dl, "Invariant", n.invariant);
+    var dv = has(n.deviations) ? n.deviations : (n.status === "running" ? null : "not reported");
+    field(dl, "Deviations", dv, devWarn(n) ? "dev" : null);
+    field(dl, ".meta.json", n.meta);
+    field(dl, "Run dir", has(n.run_dir) ? n.run_dir : (summary.run_dirs || [])[0]);
+    if (n.also && n.also.length) {
+      dl.appendChild(el("dt", null, "Also from"));
+      var ad = el("dd");
+      n.also.forEach(function (id, i) {
+        if (i) ad.appendChild(document.createTextNode(", "));
+        var a = el("a", null, "#" + id); a.href = "#step" + id; ad.appendChild(a);
+      });
+      dl.appendChild(ad);
+    }
+    if (n.amend && n.amend.length) {
+      dl.appendChild(el("dt", null, "Amendments"));
+      var ul = el("ul"); n.amend.forEach(function (t) { ul.appendChild(el("li", null, t)); });
+      var ld = el("dd"); ld.appendChild(ul); dl.appendChild(ld);
+    }
+    if (has(n.date)) field(dl, "Date", n.date);
+    d.appendChild(dl);
+    return d;
+  }
+
+  function buildNode(n, first, last, hasAfter) {
+    var node = el("div", "node" + (first ? " first" : "") + (last ? " last" : ""));
+    node.id = "step" + n.id;
+    node.dataset.open = "false";
+    var dot = el("span", "dot " + (GLYPH[n.status] ? n.status : "idle"), GLYPH[n.status] || "○");
+    dot.title = n.status || "pending";
+    node.appendChild(dot);
+    var row = el("div", "row");
+    var caret = el("button", "caret" + (hasAfter ? "" : " none"), "▾"); caret.type = "button";
+    caret.setAttribute("aria-label", "Collapse what follows this step");
+    row.appendChild(caret);
+    var detail = buildDetail(n);
+    var head = el("button", "head"); head.type = "button";
+    head.setAttribute("aria-expanded", "false"); head.setAttribute("aria-controls", detail.id);
+    head.appendChild(el("span", "num", String(n.id)));
+    head.appendChild(el("span", "tool", n.tool || "?"));
+    if (has(n.table)) { var mints = n.action === "create" || n.action === "merge"; head.appendChild(el("span", "chip" + (mints ? " new" : ""), (mints ? "+" : "") + n.table)); }
+    if (has(n.label)) head.appendChild(el("span", "chip lab", n.label));
+    if (has(n.headline)) head.appendChild(el("span", "headline", n.headline));
+    if (devWarn(n)) { var w = el("span", "tag warn", "⚠"); w.title = "deviations declared or not reported"; head.appendChild(w); }
+    row.appendChild(head);
+    node.appendChild(row);
+    node.appendChild(detail);
+    var rec = { n: n, node: node, detail: detail, head: head, caret: caret, after: null };
+    head.addEventListener("click", function () { setOpen(rec, detail.hidden); });
+    all.push(rec);
+    return rec;
+  }
+
+  function setOpen(rec, open) {
+    rec.detail.hidden = !open;
+    rec.head.setAttribute("aria-expanded", String(open));
+    rec.node.dataset.open = String(open);
+  }
+
+  function countBelow(id) {
+    var k = kids[id] || [], t = 0;
+    k.forEach(function (x) { t += 1 + countBelow(x.id); });
+    return t;
+  }
+
+  // Render a chain: single-child runs stay at one indent; a fork indents its branches.
+  function renderChain(n, container, first) {
+    var k = kids[n.id] || [];
+    var last = k.length === 0;
+    var rec = buildNode(n, first, last, !last);
+    container.appendChild(rec.node);
+    if (k.length > 1) {
+      var tag = el("span", "tag fork", "fork · " + k.length);
+      rec.head.appendChild(tag);
+    }
+    if (last) return;
+    var after = el("div", "after");
+    rec.after = after;
+    container.appendChild(after);
+    if (k.length === 1) renderChain(k[0], after, false);
+    else {
+      var wrap = el("div", "branches");
+      k.forEach(function (child) {
+        var br = el("div", "branch");
+        renderChain(child, br, true);
+        wrap.appendChild(br);
+      });
+      after.appendChild(wrap);
+    }
+    var hidTag = null;
+    rec.setFolded = function (hide) {
+      after.hidden = hide;
+      rec.caret.textContent = hide ? "▸" : "▾";
+      rec.caret.setAttribute("aria-label", hide ? "Expand what follows this step" : "Collapse what follows this step");
+      if (hide && !hidTag) { hidTag = el("span", "tag hidden", "+" + countBelow(n.id) + " hidden"); rec.head.appendChild(hidTag); }
+      else if (!hide && hidTag) { hidTag.remove(); hidTag = null; }
+    };
+    rec.caret.addEventListener("click", function () { rec.setFolded(!after.hidden); });
+  }
+
+  var tree = $("tree");
+  if (!nodes.length) tree.appendChild(el("p", "empty", "No prosapia step recorded yet."));
+  roots.forEach(function (r) {
+    var g = el("div", "chain");
+    renderChain(r, g, true);
+    tree.appendChild(g);
+  });
+  if (all.length === 1) all[0].node.classList.add("solo");
+
+  // ---- controls ----------------------------------------------------------
+  $("open-all").addEventListener("click", function () { all.forEach(function (r) { setOpen(r, true); }); });
+  $("close-all").addEventListener("click", function () { all.forEach(function (r) { setOpen(r, false); }); });
+  $("problems").addEventListener("click", function (e) {
+    var on = e.currentTarget.getAttribute("aria-pressed") !== "true";
+    e.currentTarget.setAttribute("aria-pressed", String(on));
+    all.forEach(function (r) { r.node.classList.toggle("dim", on && !isProblem(r.n)); });
+  });
+
+  // #step7 opens step 7 (and unfolds anything hiding it), so the campaign log can link to a step.
+  function goto() {
+    var m = /^#step(\d+)$/.exec(location.hash);
+    if (!m) return;
+    var rec = all.filter(function (r) { return String(r.n.id) === m[1]; })[0];
+    if (!rec) return;
+    all.forEach(function (r) { if (r.setFolded && r.after.contains(rec.node)) r.setFolded(false); });
+    all.forEach(function (r) { r.node.classList.remove("target"); });
+    setOpen(rec, true);
+    rec.node.classList.add("target");
+    rec.node.scrollIntoView({ block: "center" });
+  }
+  window.addEventListener("hashchange", goto);
+  goto();
+})();
+</script>
+</body>
+</html>
