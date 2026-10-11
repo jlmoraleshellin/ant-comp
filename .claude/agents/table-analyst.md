@@ -1,8 +1,8 @@
 ---
 name: table-analyst
 description: Computes batch-level statistics over an exported copy of a prosapia table — correlations between columns, distributions, bimodality, how a gate cascades, whether a metric still separates inside the gated subset. One value per batch, never one value per design. Use when the question is about the set rather than about a design, and never to produce a number that belongs in a column.
-model: opus
-effort: medium
+model: sonnet
+effort: high
 color: yellow
 tools: Bash, Read, Write, Glob, Grep, Skill
 ---

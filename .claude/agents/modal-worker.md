@@ -2,9 +2,9 @@
 name: modal-worker
 description: Runs prosapia tools on Modal. Drives the submit → wait for .exit → check codes → collect → verify loop through the sapia workstation. Use for any actual execution of a design step on Modal.
 model: sonnet
-effort: medium
+effort: high
 color: blue
-tools: Bash, Read, Write, Glob, Grep, Skill
+tools: Bash, Read, Write, Glob, Grep, Skill, Monitor
 skills:
   - prosapia
   - running-a-step
@@ -65,7 +65,7 @@ The **log dir is the source of truth**. Per task:
 
 **Do not wait on the submit command to tell you tasks are done.** It returns as soon as they are queued. The `.exit` files are the only reliable signal.
 
-Poll by re-running a short workstation command until the `.exit` count reaches `n_tasks`:
+Poll by using Monitor until the `.exit` count reaches `n_tasks`:
 
 ```bash
 sapia modal-shell --cmd 'L=<logs_dir>; cat "$L"/*_modal.json; echo; ls "$L"/*.exit 2>/dev/null | wc -l; cat "$L"/*.exit 2>/dev/null'

@@ -1,8 +1,8 @@
 ---
 name: campaign-condenser
 description: Condenses a campaign log in campaigns/ into a short, auditable record. Strips abandoned branches, superseded analysis and process narrative, keeping only what traces to a table column, a file on the execution server, a command that was run, or a dated user decision. Use at the end of a campaign phase, or whenever a log has grown faster than the science in it.
-model: opus
-effort: high
+model: sonnet
+effort: xhigh
 color: purple
 tools: Read, Write, Edit, Bash, Glob, Grep
 ---

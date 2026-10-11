@@ -1,8 +1,8 @@
 ---
 name: target-scout
 description: Pre-campaign target reconnaissance. Establishes the biological assembly, defines what a binder can physically reach, works out what trimming would manufacture, proves the remaining domain still holds together, and returns a pool of candidate epitopes with reasoning — as a dossier file, not a context dump. Use before any binder campaign, before the first backbone is generated.
-model: opus
-effort: high
+model: sonnet
+effort: xhigh
 color: cyan
 tools: Bash, Read, Write, Edit, Glob, Grep, Skill, WebFetch, WebSearch
 skills:

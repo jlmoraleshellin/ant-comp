@@ -2,9 +2,9 @@
 name: vib-worker
 description: Runs prosapia tools on the vib HPC cluster (SLURM). Drives the submit → wait for the array job → check states → collect → verify loop over ssh to the vib login node. Use for any actual execution of a design step on vib instead of Modal.
 model: sonnet
-effort: medium
+effort: high
 color: green
-tools: Bash, Read, Write, Glob, Grep, Skill
+tools: Bash, Read, Write, Glob, Grep, Skill, Monitor
 skills:
   - prosapia
   - running-a-step
