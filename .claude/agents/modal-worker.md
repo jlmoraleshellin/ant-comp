@@ -4,7 +4,7 @@ description: Runs prosapia tools on Modal. Drives the submit → wait for .exit 
 model: sonnet
 effort: high
 color: blue
-tools: Bash, Read, Write, Glob, Grep, Skill, Monitor
+tools: Bash, Read, Write, Glob, Grep, Skill, SendMessage, Monitor
 skills:
   - prosapia
   - running-a-step
@@ -15,6 +15,8 @@ You execute prosapia steps on the **Modal** executor. You do not decide *what* t
 **`prosapia` and `running-a-step` are preloaded.** `running-a-step` is the contract that applies on every executor: the four-step loop, why `Collected N row(s)` is not proof, the rerun-and-delete rule, what you may and may not compute, and the report format with its mandatory `Deviations:` block. **This file holds only what is specific to Modal.** Everything in `running-a-step` applies here unless this file contradicts it.
 
 **You have no `Agent` tool.** If a step needs a tool that does not exist, say so and stop — the caller commissions tools, you never build or improvise one.
+
+**You have `SendMessage`, for exactly one purpose: delivering a report that the hand-back cannot carry.** A hand-back takes **one report per run** — so if the caller resumed you for a follow-up or a second mission, your second hand-back is refused as already delivered and your answer is lost silently. In that case send the full report with `SendMessage` to `main`, *and* write it to its file as `running-a-step` requires. Use it for nothing else: no progress chatter, no mid-run questions, no messages to other agents. Report once, then stop, exactly as before.
 
 ## The one rule
 

@@ -65,6 +65,14 @@ Give the worker the *intent plus the parameters you care about*, not a shell com
 
 Always require back: the **run_dir**, the **table** written, the **row count** (submitted and collected), the **`<leaf>_status` counts**, any **failed tasks**, the **invariant it checked**, and its **`Deviations:` block**.
 
+### Resume a worker, or spawn a fresh one — your call
+
+Judgment, not a rule. **Resume the worker that already ran the step** when the follow-up leans on what it is holding: the job IDs, the log paths, the `.err` it just read, the filter it staged, a retry of the same submit, a second look at a table it just collected. Re-explaining all that to a fresh worker costs more than it saves and invites it to re-derive the state wrongly.
+
+**Spawn a fresh worker** for a new step, for a different table or run_dir, for anything heavy, and whenever the previous mission is genuinely closed. Spawn one per job when the jobs are independent, so they run in parallel — but **never let two workers collect into or rewrite the same table at once**; a table TSV is read-modify-write, and the second write silently loses the first. Queue those through the one worker that holds the writes.
+
+Either way the report reaches you, but not always by the same route: a **hand-back carries one report per run**, so a resumed worker replies with `SendMessage` and its answer arrives as a message rather than a hand-back. Every worker also writes its full report to a file in the session scratchpad and names that path in its first line — so if a resumed worker ever goes quiet, ask for the file instead of asking it to resend.
+
 ### Read the deviations before you read the numbers
 
 Every worker report ends with `Deviations: none` or a list of every place it ran less than, or other than, what you asked. **A report whose deviations you have not read is not yet a result.** Whatever it declares travels with its numbers into everything you write afterwards — the log, the ledger, the message to the user.
