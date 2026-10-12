@@ -1,6 +1,7 @@
 ---
 name: protonpottsmpnn
-description: How to run the custom protonpottsmpnn tool — Proton-PottsMPNN, a PottsMPNN with an explicit protonation-state alphabet that designs pH-switchable binder sequences by pinning protonated centres (HIS-P/ASP-P/GLU-P) and redesigning around them. Covers the lambda ladder (stability vs pH-selectivity) and the per-backbone Pareto front, --explicit-centers and its residue-numbering trap, --placement-region and why 'interface' needs a complex, the HBPLUS build dependency the upstream README denies, the centers_verified trust column, and why its energies never compare across backbones. Load before composing a protonpottsmpnn run or reading its columns.
+description: >-
+  Proton-PottsMPNN, a PottsMPNN with an explicit protonation-state alphabet that designs pH-switchable binder sequences by pinning protonated centres (HIS-P/ASP-P/GLU-P) and redesigning around them. Load before composing a protonpottsmpnn run or reading its columns. Traps: `--explicit-centers` has a residue-numbering trap, `--placement-region interface` needs a complex, check `centers_verified`, and energies never compare across backbones.
 ---
 
 # protonpottsmpnn

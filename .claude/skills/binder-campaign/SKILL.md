@@ -1,6 +1,7 @@
 ---
 name: binder-campaign
-description: How to sequence and judge a de-novo binder campaign in this workspace — defining a bindable target, the order the gates must be applied in, which tool answers which question, and what each metric is blind to. Load at the start of any binder design against a specific target, and before interpreting any interface number. Tool flags live in the per-tool skills; this is the ordering and the epistemics.
+description: >-
+  How to sequence and judge a de-novo binder campaign: defining a bindable target, the order to apply the gates, which tool answers which question, and what each metric is blind to. Load at the start of any binder design against a specific target and before interpreting any interface number. Tool flags live in the per-tool skills.
 ---
 
 # Running a binder campaign

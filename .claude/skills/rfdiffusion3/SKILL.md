@@ -1,13 +1,7 @@
 ---
 name: rfdiffusion3
 description: >-
-  Generate protein backbones with rfdiffusion3 (rfd3) — de novo, motif-scaffolded, symmetric, or
-  binder-against-a-target. Load before composing any rfdiffusion3 run, and before writing a contig
-  or a hotspot spec: the chain-break literal is `/0` and the colon form silently designs against
-  half your target, `--length min-max` draws one length per batch rather than varying within it, and
-  rfd3 renumbers every output chain from 1 so every downstream step that names target residues
-  inherits the offset. Covers the root-vs-child run shapes, every flag, the select_hotspots syntax
-  that is documented nowhere else, the checkpoint Volume, and what the backbones cannot tell you.
+  Generates protein backbones with rfdiffusion3 (rfd3): de novo, motif-scaffolded, symmetric or binder-against-a-target. Load before composing any rfdiffusion3 run or writing a contig or hotspot spec. Traps: the chain-break literal is `/0` (the colon form silently designs against half the target); `--length min-max` draws one length per batch; rfd3 renumbers every output chain from 1, so downstream residue numbers inherit an offset.
 ---
 
 # rfdiffusion3

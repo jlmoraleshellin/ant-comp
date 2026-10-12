@@ -1,6 +1,7 @@
 ---
 name: authoring-a-tool
-description: How to add a new tool to this protein-design pipeline — scaffolding its spec.py descriptor, its run_<name>.py manifest builder, its collect_<name>.py output collector, the .sh task script, and an optional modal_image.py, all wired into the `sapia` CLI. Use whenever the request is to "create a tool", "add a tool", "write a new tool", "scaffold a tool", build a manifest / build_manifest_fn, write a collect function / collect_fn, wrap a protein-design binary as a pipeline step, make a tool runnable on Modal, or pick a tool `action` (create / update).
+description: >-
+  How to add a new tool to this pipeline: the spec.py descriptor, run_<name>.py manifest builder, collect_<name>.py collector, .sh task script and optional modal_image.py, wired into the `sapia` CLI. Use when asked to create, add, scaffold or write a new tool, build a manifest or collect function, wrap a binary as a pipeline step, or pick a tool `action` (create / update).
 ---
 
 # Authoring a pipeline tool

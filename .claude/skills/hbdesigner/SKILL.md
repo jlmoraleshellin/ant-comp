@@ -1,6 +1,7 @@
 ---
 name: hbdesigner
-description: How to run the custom hbdesigner tool on Modal — RosettaCommons/HBDesigner, which designs buried hydrogen-bond networks onto an existing backbone (GNN + PyRosetta). Covers monomer and one-sided/two-sided interface design, every flag, the poly-glycine output convention, the zero-output success, the variable fan-out, the graft-back step for omitted chains, and the fixed_positions hand-off to proteinmpnn. Load before composing an hbdesigner run or reading its columns.
+description: >-
+  HBDesigner (RosettaCommons) on Modal: designs buried hydrogen-bond networks onto an existing backbone, as monomer or one-/two-sided interface design. Load before composing an hbdesigner run or reading its columns. Traps: output is poly-glycine, zero output counts as success, fan-out is variable, and omitted chains need the graft-back step before the `fixed_positions` hand-off to proteinmpnn.
 ---
 
 # hbdesigner

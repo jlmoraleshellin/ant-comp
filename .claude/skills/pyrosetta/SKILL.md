@@ -1,6 +1,7 @@
 ---
 name: pyrosetta
-description: How to run the pyrosetta energy-scoring tool on Modal — which structure column to score, the default FastRelax and when to turn it off, interface metrics for complexes, the columns it writes (total_score, score_per_res, score terms, packstat, buried_unsat, if_dG…), and the fact that failures exit 0. Load before composing a pyrosetta run.
+description: >-
+  PyRosetta energy scoring on Modal: FastRelax by default, plus interface metrics for complexes. Load before composing a pyrosetta run. Traps: choose the structure column to score deliberately, know when to turn relax off, and failures exit 0.
 ---
 
 # pyrosetta

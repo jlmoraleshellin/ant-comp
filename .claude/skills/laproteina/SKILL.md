@@ -1,6 +1,7 @@
 ---
 name: laproteina
-description: How to run the custom laproteina tool — La-Proteina Complexa (LPC), NVIDIA's fully atomistic flow-matching binder generator. Covers why it is root-only (the target comes from LPC's own registry, not a table column), the --num-jobs x --nsamples cost model, why only the generate stage is run and what that gives up, the two Volumes it needs (checkpoints and the target registry), the silent-skip trap in LPC's generate.py, and the columns it collects. Load before composing a laproteina run or interpreting its columns.
+description: >-
+  La-Proteina Complexa (LPC), NVIDIA's atomistic flow-matching binder generator. Load before composing a laproteina run or interpreting its columns. Traps: it is root-only (the target comes from LPC's own registry, not a table column), cost is `--num-jobs` x `--nsamples`, only the generate stage runs, and LPC's generate.py skips silently.
 ---
 
 # laproteina

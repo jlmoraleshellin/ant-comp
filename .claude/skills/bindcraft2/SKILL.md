@@ -1,6 +1,7 @@
 ---
 name: bindcraft2
-description: How to run the custom bindcraft2 tool on Modal — BindCraft2 binder-design campaigns, where one task is a whole campaign rather than one design. Covers the campaign cost model (--num-designs vs --max-trajectories), root vs child runs, hotspots with {expr}, --targets for TRUE multi-specificity (one binder optimised jointly against several targets, with detarget counter-selection) and the per-target column layout it collects, --trajectory-only for handing backbones to atomium/proteinmpnn instead of BC2's own MPNN, --reuse-campaigns for collecting one campaign into two tables (how to compare BC2's own designs against atomium's on the same backbones), the table/dir labels that fork needs and the silent table collision when you omit them, the AlphaFold-parameter cache Volume, the three collect stages, --copies for a homo-oligomeric (dimeric, trimeric) binder and why its lengths are per copy, how to get the binder's chain LETTER, the secondary-structure presets (mixed_topology is the ANTI-helix one), and why its own confidence scores are not independent validation. Load before composing a bindcraft2 run or reading its columns.
+description: >-
+  BindCraft2 binder-design campaigns on Modal, where one task is a whole campaign rather than one design. Load before composing a bindcraft2 run or reading its columns. Traps: cost is set by `--num-designs` vs `--max-trajectories`; forking without table/dir labels silently collides tables; `--copies` lengths are per copy; `mixed_topology` is the ANTI-helix preset; BC2's own confidence scores are not independent validation. Also covers `--targets` multi-specificity, `--trajectory-only` and `--reuse-campaigns`.
 ---
 
 # bindcraft2

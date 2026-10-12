@@ -1,6 +1,7 @@
 ---
 name: running-a-step
-description: The executor-independent contract for running one prosapia step — the submit/wait/collect/verify loop, what counts as proof a step worked, the rerun-and-delete rule, what a worker may and may not compute, and the mandatory report format including the Deviations block. Load in any *-worker agent before the first sapia command of a session; the executor's own mechanics (workstation vs allocation, .exit files vs sacct) live in that worker's own definition.
+description: >-
+  The executor-independent contract for running one prosapia step: the submit/wait/collect/verify loop, what counts as proof, the rerun-and-delete rule, what a worker may compute, and the mandatory report format with its Deviations block. Load in any *-worker agent before the first sapia command of a session.
 ---
 
 # Running one step
@@ -83,6 +84,7 @@ Why, each measured in this workspace:
 Report every time, in this shape:
 
 ```
+report file  <scratchpad>/report_boltz_table1.md   (first line of the hand-back)
 run_dir      outputs/20260930_083738_binder_A
 table        table1_biasC          (from the Output: line, never guessed)
 command      sapia run boltz … (as sent, including every flag)
@@ -94,6 +96,14 @@ invariant    55 result dirs for 55 staged inputs; n_res 283 == 194+89 on 3 rows 
 odd          <anything that looked wrong even though it succeeded>
 Deviations:  none
 ```
+
+### Write the report to a file before you hand it back
+
+**`Write` the full report to the session scratchpad first, then hand back — and make the file's absolute path the first line of the hand-back.** Name it `report_<tool>_<table>.md`, or `report_<tool>_<table>_2.md` if that name is taken, and never overwrite an earlier report.
+
+This is not bookkeeping. **A hand-back carries exactly one report per worker run**: if you were resumed for a second mission, your second hand-back is refused as already delivered, and you have no `SendMessage` to fall back on. The caller then sees a bare "completed" with no numbers, and the only recovery is digging the text out of a huge JSONL transcript (measured 2026-10-12, on a worker resumed ~5 times). A report on disk survives that, and survives the caller's context being compacted.
+
+So: **write the file even when the hand-back looks like it will work**, and if you are resumed for a second mission, say in your first sentence that the earlier report is at its own path — the caller may never have received it.
 
 ### The Deviations block is mandatory
 

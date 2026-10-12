@@ -1,12 +1,7 @@
 ---
 name: usalign
 description: >-
-  Structure-vs-structure comparison per design with USalign — TM-score, RMSD, alignment lengths.
-  Load before composing a usalign run, and before reading any TM or RMSD it wrote: which column is
-  honest depends on --mm and on whether the structures are monomers or complexes, and on a complex
-  the RMSD inverts, so low RMSD marks the designs that drifted. Covers the --col-a/--col-b pair
-  instead of an input column, lineage resolution for self-consistency, the prefix contract between
-  run and collect, and the fact that failures exit 0.
+  Structure-vs-structure comparison per design with USalign: TM-score, RMSD, alignment lengths. Load before composing a usalign run or reading any TM or RMSD it wrote. Traps: which column is honest depends on `--mm` and on monomer vs complex; on a complex the RMSD inverts, so low RMSD marks designs that drifted; it takes a `--col-a`/`--col-b` pair; failures exit 0.
 ---
 
 # usalign

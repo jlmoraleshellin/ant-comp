@@ -1,6 +1,7 @@
 ---
 name: editing-a-tool
-description: How to change the behaviour of an existing (bundled or custom) tool in this protein-design pipeline — picking the lightest mechanism that works (run flags, a --filter module, a custom --script, the activation script, `get_builtin(...).with_overrides(...)`, `sapia fork-tool`, or editing the built-in in place) and the naming/discovery rules that decide whether the change shadows the original or registers alongside it. Use whenever the request is to "edit a tool", "customize a tool", "modify rfdiffusion/proteinmpnn/...", "override a tool's collect/manifest", "fork a tool", "shadow a built-in", "use my own .sh for a tool", "change how a tool is activated", or "make a variant of a tool". For writing a brand-new tool from scratch, use the authoring-a-tool skill instead.
+description: >-
+  How to change an existing (bundled or custom) tool: picking the lightest mechanism that works (run flags, a `--filter` module, a custom `--script`, the activation script, `with_overrides`, `sapia fork-tool`, or editing in place) and the naming/discovery rules that decide whether a change shadows the original or registers alongside it. Use when asked to edit, customize, override, fork or shadow a tool, or to change how it is activated. For a brand-new tool use authoring-a-tool.
 ---
 
 # Editing a pipeline tool

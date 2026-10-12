@@ -1,6 +1,7 @@
 ---
 name: mkcomplex
-description: How to run the custom mkcomplex tool — rebuilding a design's full multi-chain complex sequence by putting the fixed target chains back around a ProteinMPNN binder sequence, so a structure predictor folds the complex instead of the binder alone. Covers --prepend/--append seqs vs fasta, --repeat for homo-oligomeric targets, why it should be launched at full table width (-C 400 is fine on both Modal and vib), and the columns it writes. Load before composing a mkcomplex run, or before any Boltz/AF3 run on a binder table.
+description: >-
+  Rebuilds a design's full multi-chain complex sequence by putting the fixed target chains back around a ProteinMPNN binder sequence, so a predictor folds the complex instead of the binder alone. Load before composing a mkcomplex run, or before any Boltz/AF3 run on a binder table. Covers `--prepend`/`--append`, `--repeat` for homo-oligomeric targets, and launching at full table width (`-C 400`).
 ---
 
 # mkcomplex

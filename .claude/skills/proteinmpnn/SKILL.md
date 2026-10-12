@@ -1,6 +1,7 @@
 ---
 name: proteinmpnn
-description: How to run the proteinmpnn sequence-design tool on Modal — flags, the input-column trap when coming from rfdiffusion3, symmetry, and what it collects. Also the `--set` quoting trap (a bare flag needs `--set=`), why `--fixed-positions` requires a chain list, and when fixing a whole target chain substitutes for mkcomplex. Load before composing a proteinmpnn run.
+description: >-
+  ProteinMPNN sequence design on Modal. Load before composing a proteinmpnn run. Traps: from an rfdiffusion3 table pass `-i rfdiffusion3_path` or nothing is submitted; a bare flag in `--set` needs `--set=`; `--fixed-positions` requires a chain list; fixing a whole target chain can substitute for mkcomplex.
 ---
 
 # proteinmpnn

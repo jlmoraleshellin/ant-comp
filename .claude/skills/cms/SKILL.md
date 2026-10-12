@@ -1,6 +1,7 @@
 ---
 name: cms
-description: How to run the custom cms tool on Modal — GPU contact molecular surface (CMS) and shape complementarity (SC) of a binder/target interface via cms-cuda. Covers --binder-chains/--target-chains, which structure column to score, --designs-per-task batching, the GPU/CPU device rule, the dir-label rule, how to read the numbers, and the columns it collects. Load before composing a cms run or before ranking binders by interface quality.
+description: >-
+  GPU contact molecular surface (CMS) and shape complementarity (SC) of a binder/target interface via cms-cuda, on Modal. Load before composing a cms run or ranking binders by interface quality. Covers which structure column to score, `--binder-chains`/`--target-chains`, batching, and the GPU/CPU device rule.
 ---
 
 # cms

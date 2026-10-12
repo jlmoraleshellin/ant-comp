@@ -1,11 +1,7 @@
 ---
 name: writing-a-tool-skill
 description: >-
-  The house shape for a prosapia tool's SKILL.md — the frontmatter contract (including the
-  unquoted-colon trap that silently strips a skill's description), the required sections in the order
-  an agent reads them, and the self-check before you publish. Load when writing a skill for a new
-  tool, when bringing an existing tool skill up to standard, or when a tool's documented columns and
-  its collector have drifted apart. Pairs with `authoring-a-tool`, which covers the code.
+  The house shape for a prosapia tool's SKILL.md: the frontmatter contract (an unquoted colon silently strips the description), the required sections in order, and the pre-publish self-check. Load when writing or upgrading a tool skill, or when a skill's documented columns and its collector have drifted apart. Pairs with `authoring-a-tool`.
 ---
 
 # Writing a tool skill
