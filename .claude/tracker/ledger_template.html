@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Progress ledger</title>
 <style>
+/* Styles for the progress ledger. Loaded by every campaigns/*_progress.html next to ledger.js. */
 :root{
   --bg:#fafaf9;--panel:#fff;--ink:#1c1917;--mute:#78716c;--line:#e7e5e4;--rail:#c4bfba;
   --ok:#15803d;--ok-bg:#dcfce7;--bad:#b91c1c;--bad-bg:#fee2e2;--run:#b45309;--run-bg:#fef3c7;
@@ -94,37 +95,35 @@ main{padding-bottom:48px}
 .node.dim>.row{opacity:.35}
 @media (max-width:560px){.detail dl{grid-template-columns:1fr}.legend{margin-left:0}}
 footer{color:var(--mute);font-size:.78rem;padding-bottom:32px}
+.facts .more{font:inherit;font-size:.78rem;margin-left:6px;padding:0;border:0;background:none;color:var(--accent);cursor:pointer}
+
+/* fallback look, used only while the script below has not run; the script hides #ledger and removes #fallback when it succeeds */
+#ledger{display:block;white-space:pre-wrap;word-break:break-all;font:12px/1.45 ui-monospace,Menlo,Consolas,monospace;margin:0 16px 16px;padding:10px 14px;border:1px dashed #888}
+#fallback{margin:16px;padding:10px 14px;border:1px solid #b91c1c;border-radius:8px;color:#b91c1c;font:14px/1.5 system-ui,sans-serif}
 </style>
 </head>
 <body>
 
-<!-- DATA: one JSON object per line. First key decides the kind: {"summary":…} once, {"id":…} per step.
-     Lines starting with # are ignored. Edit lines; never touch the markup or the script below. -->
+<div id="fallback">The ledger script did not run, so only the raw data is shown. VS Code's HTML Preview blocks scripts by default: run the command "HTML: Change Preview Security Settings" and choose "Disable" (once per workspace), or open this file in a browser.</div>
+
+<!-- DATA: one JSON object per line. First key decides the kind: {"summary":...} once, {"id":...} per step.
+     Lines starting with # are ignored. Edit lines; never touch the markup, the style or the script. -->
 <script type="text/plain" id="ledger">
 {"summary":{"basename":"{{BASENAME}}"}}
 # end-nodes
 </script>
-
-<header>
-  <h1 id="title"></h1>
-  <p class="goal" id="goal"></p>
-  <div class="stats" id="stats"></div>
-  <dl class="facts" id="facts"></dl>
-  <details id="rundirs"><summary>Run dirs</summary><ul id="rundirlist"></ul></details>
-  <div id="banners"></div>
-</header>
-<div class="toolbar">
-  <button id="open-all" type="button">Open all details</button>
-  <button id="close-all" type="button">Close all details</button>
-  <button id="problems" type="button" aria-pressed="false" title="Dim every step that has no failure, partial result or deviation">Highlight problems</button>
-  <span class="legend">✓ done · ◐ partial · ✕ failed · ◔ running · ⚠ deviations · +table = new table</span>
-</div>
-<main id="tree"></main>
-<footer id="foot"></footer>
-
 <script>
 (function () {
   "use strict";
+  if (window.__ledgerRendered) return;   // the page may list this file under two relative paths
+  window.__ledgerRendered = true;
+  try { main(); }
+  catch (err) {
+    var fb = document.getElementById("fallback");
+    if (fb) fb.textContent = "The ledger renderer failed (" + err.message + "). The raw data is below; the file itself is intact.";
+    throw err;
+  }
+  function main() {
   var $ = function (id) { return document.getElementById(id); };
   function el(tag, cls, text) {
     var e = document.createElement(tag);
@@ -133,6 +132,31 @@ footer{color:var(--mute);font-size:.78rem;padding-bottom:32px}
     return e;
   }
   var has = function (v) { return v != null && v !== ""; };
+
+  // ---- skeleton: everything the page shows is built here, so a page whose script did not run shows only the fallback
+  function build() {
+    var hd = el("header");
+    hd.appendChild(Object.assign(el("h1"), { id: "title" }));
+    hd.appendChild(Object.assign(el("p", "goal"), { id: "goal" }));
+    hd.appendChild(Object.assign(el("div", "stats"), { id: "stats" }));
+    hd.appendChild(Object.assign(el("dl", "facts"), { id: "facts" }));
+    var rd = Object.assign(el("details"), { id: "rundirs" });
+    rd.appendChild(el("summary", null, "Run dirs"));
+    rd.appendChild(Object.assign(el("ul"), { id: "rundirlist" }));
+    hd.appendChild(rd);
+    hd.appendChild(Object.assign(el("div"), { id: "banners" }));
+    var tb = el("div", "toolbar");
+    [["open-all", "Open all details"], ["close-all", "Close all details"], ["problems", "Highlight problems"]].forEach(function (b) {
+      var x = el("button", null, b[1]); x.type = "button"; x.id = b[0];
+      if (b[0] === "problems") { x.setAttribute("aria-pressed", "false"); x.title = "Dim every step that has no failure, partial result or deviation"; }
+      tb.appendChild(x);
+    });
+    tb.appendChild(el("span", "legend", "✓ done · ◐ partial · ✕ failed · ◔ running · ⚠ deviations · +table = new table"));
+    var main = Object.assign(el("main"), { id: "tree" });
+    var ft = Object.assign(el("footer"), { id: "foot" });
+    [hd, tb, main, ft].forEach(function (n) { document.body.appendChild(n); });
+  }
+  build();
 
   // ---- parse -------------------------------------------------------------
   var summary = {}, nodes = [], problems = [];
@@ -178,7 +202,19 @@ footer{color:var(--mute);font-size:.78rem;padding-bottom:32px}
   [["Live table", summary.live_table], ["Gates", summary.gates], ["In flight", summary.in_flight], ["Blocked", summary.blocked]].forEach(function (p) {
     if (!has(p[1])) return;
     $("facts").appendChild(el("dt", null, p[0]));
-    $("facts").appendChild(el("dd", p[0] === "Blocked" && !/^(nothing|none|—|-)\b/i.test(p[1]) ? "alert" : null, p[1]));
+    var dd = el("dd", p[0] === "Blocked" && !/^(nothing|none|—|-)\b/i.test(p[1]) ? "alert" : null, p[1]);
+    if (p[1].length > 180) {   // a summary line is one line; anything longer is folded behind a click
+      var full = p[1], short = full.slice(0, 160).replace(/\s+\S*$/, "") + "…";
+      dd.textContent = short;
+      var more = el("button", "more", "more"); more.type = "button";
+      more.addEventListener("click", function () {
+        var open = more.textContent === "less";
+        dd.firstChild.nodeValue = open ? short : full;
+        more.textContent = open ? "more" : "less";
+      });
+      dd.appendChild(more);
+    }
+    $("facts").appendChild(dd);
   });
   var rds = summary.run_dirs || [];
   if (!rds.length) $("rundirs").hidden = true;
@@ -360,6 +396,11 @@ footer{color:var(--mute);font-size:.78rem;padding-bottom:32px}
   }
   window.addEventListener("hashchange", goto);
   goto();
+
+  var fb = document.getElementById("fallback");
+  if (fb) fb.remove();
+  $("ledger").style.display = "none";
+  }
 })();
 </script>
 </body>
