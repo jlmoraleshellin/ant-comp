@@ -1,6 +1,7 @@
 ---
 name: atomium
-description: How to run the custom atomium tool on Modal — AtomiUM, a private ProteinMPNN-like sequence designer with noise-conditioned weights. Covers --model-noise and how to pick it, the multi-temperature sampling count, the --bias-aa calibration trap (it is global not positional, and ~16x stronger than exp(bias) at the default sampling temperature, so it must be fitted empirically and can make an "exactly one of X" criterion worse), what seq_rec really measures, the private-repo image built with Modal Secrets, and why its FASTA carries no score column (so designs cannot be ranked the way proteinmpnn's score allows). Load before composing an atomium run, before setting any amino-acid bias, or when interpreting its columns.
+description: >-
+  AtomiUM, a private ProteinMPNN-like sequence designer, on Modal. Load before composing an atomium run, setting any amino-acid bias, or feeding an atomium sequence to mkcomplex or a predictor. Traps: `--bias-aa` is global and far stronger than exp(bias), and with `--fixed-positions` only `atomium_sequence_full` carries the pinned residues.
 ---
 
 # atomium
@@ -37,7 +38,7 @@ rfd3 run. Coming from a different parent, pass `-i` explicitly.
 | `--sampling-temp` | `0.1` | One or more space-separated temperatures: `'0.1 0.2'`. See the count rule below. |
 | `--seed` | 37 | **`0` means pick a random seed**, it does not mean seed zero. |
 | `--designs-per-task` | 10 | Designs bin-packed per task; identical-param designs share one batched call. |
-| `--chains-to-design`, `--fixed-positions`, `--tied-positions`, `--symmetry`, `--bias-aa`, `--set` | | Identical to proteinmpnn, including the guardrail that positions require a chain list. |
+| `--chains-to-design`, `--fixed-positions`, `--tied-positions`, `--symmetry`, `--bias-aa`, `--set` | | **The flag GRAMMAR is proteinmpnn's**, including the guardrail that positions require a chain list. **The OUTPUT is not.** With `--fixed-positions` — and for any chain that is not designed — AtomiUM's FASTA **does not contain the fixed residues at all**, so `atomium_sequence` is not the binder. Take **`atomium_sequence_full`**; see the trap section below. |
 
 Default Modal resources: **L4**, 8 CPU, 16 GiB, 1 h timeout. Weights ship inside the
 image — no cache Volume, no download step.
@@ -170,12 +171,52 @@ Child rows named `<parent>_a1`, `<parent>_a2`, … each linked to its parent bac
 (The `_a` suffix distinguishes them from proteinmpnn's `_f` rows.)
 
 Columns (leaf-prefixed `atomium_`): `sequence`, `sample`, `temperature`, `seq_rec`,
-`iteration`, plus `_status` and `_path` (the FASTA).
+`iteration`, `sequence_full`, `n_fixed`, `fixed_positions`, `fixed_residues`,
+`init_matches_parsed`, `len_full_matches_parsed`, plus `_status` and `_path` (the FASTA).
 
-`atomium_sequence` is what the structure predictors consume. Note it is **not** Boltz's
-default input column (that is `proteinmpnn_sequence`), so a Boltz run after atomium
-needs `-i atomium_sequence` — or `-i mkcomplex_sequence` on a binder table, where
-mkcomplex still belongs in between.
+`atomium_sequence` is what the structure predictors consume **when no position was
+fixed**. It is **not** Boltz's default input column (that is `proteinmpnn_sequence`), so
+a Boltz run after atomium needs `-i atomium_sequence` — or `-i mkcomplex_sequence` on a
+binder table, where mkcomplex still belongs in between. **With `--fixed-positions`, read
+the next section before using `atomium_sequence` for anything.**
+
+### With `--fixed-positions`, `atomium_sequence` is NOT the binder
+
+**MEASURED** on run `table2_merged_r2cap12_his_fix` (6020 children of 602 parents, label
+`his_fix`, `--chains-to-design D --fixed-positions '{hisbond_af3_centre1_idx1},{hisbond_af3_centre2_idx1}'`): atomium.py writes **only the designable positions** into the FASTA. So every child's `sequence` is shorter than its input chain **by the number of fixed positions** (−2 on all 6020 rows) and **does not contain the fixed residues at all** — the very histidines the run was pinning. `_init_sequence` is the input chain with the same positions deleted, so it does not contradict this. For 602 of 602 parents the parent carried H at both fixed positions and the echo equalled the parent chain with exactly those two deleted.
+
+Two consequences:
+
+- **`atomium_seq_rec` is computed over the designable positions only**, so it is not comparable with a `seq_rec` from a run without fixed positions.
+- **Downstream steps must take `atomium_sequence_full`, never `atomium_sequence`.** Handing `sequence` to mkcomplex and AF3 folds a binder two residues short with no pinned histidine — a plausible-looking prediction of a molecule nobody designed.
+
+| Column | Meaning | How to read it |
+| --- | --- | --- |
+| `init_matches_parsed` | **TRUST, read first.** `1` when AtomiUM's own `_init_sequence` echo equals the parsed input chain with exactly the fixed positions removed | `1` is the proof that the positions reinserted are the ones AtomiUM actually held fixed. It is never `0` on an `OK` row — a mismatch makes the row an **error row** — so what you are checking is that the row is `OK`. Vacuously `1` when nothing was fixed. |
+| `len_full_matches_parsed` | **TRUST.** `1` when `len(sequence_full)` equals the parsed input chain's length | Same contract: `0` only ever appears on an error row. Vacuously `1` when nothing was fixed. |
+| `sequence_full` | The designed sequence **with the fixed residues reinserted** — the whole binder chain | **This is the column every downstream step wants.** Equals `sequence` exactly when `n_fixed == 0`. **Empty on an error row**, never a shortened fallback. |
+| `n_fixed` | How many positions were held fixed in the designed chain | `2` on the `his_fix` run, `0` on every older table. NA on an error row whose fixed list could not be read. |
+| `fixed_positions` | Audit string, `D:49,12` — chain and 1-based positions **in the order given**, not sorted | Compare against the `{hisbond_af3_centre<k>_idx1}` values the run was launched with. The order is the islands' order; the reinsertion does not depend on it. |
+| `fixed_residues` | The residues put back, in that same order (e.g. `HH`) | **Should be all `H` for a His-pinning run.** Anything else means the position pinned was not a histidine in the input chain — the run pinned the wrong residue, and the error is upstream in the position columns. |
+
+**The reinsertion, and what makes it safe.** The collector reads `grp_<g>/parsed_pdbs.jsonl` (one line per design, `seq_chain_<X>` = the full input chain), `grp_<g>/fixed_pdbs.jsonl` (one line per group, `{design: {chain: [1-based positions]}}`, absent when nothing was fixed) and `grp_<g>/assigned_pdbs.jsonl` (one line per group, `{design: [[designed chains], [fixed chains]]}`). It takes each fixed position's residue from the parsed chain and fills **every other position, in order**, from the designed string — so a descending fixed list like `[49, 12]` cannot scramble the result. Files are read once per group and cached (163 groups, parsed lines up to ~54 KB).
+
+**Error behaviour — a doubtful row never carries a sequence.** The row collects with a status starting `error:` and an **empty** `sequence_full` when: the echo does not match (`error: _init_sequence does not equal chain D with positions 49,12 removed …`); the designed string is not `len(chain) − n_fixed` (`error: designed sequence is 55 residues but the parsed chain has 58 with 2 fixed …`); a fixed position is outside the chain or listed twice; the parsed entry or its `seq_chain_<X>` is missing; or **more than one designed chain** (`error: 2 designed chains (D,A); the FASTA joins them with '/' …` — multi-chain reinsertion is deliberately **not implemented** rather than guessed). The FASTA's own columns (`sequence`, `sample`, `temperature`, `seq_rec`) are still filled on such a row — they are exactly what AtomiUM wrote; only `sequence_full` is withheld.
+
+**Older tables are unaffected.** A design with no fixed positions gets `sequence_full == sequence`, `n_fixed == 0`, both trust columns `1`, and **every pre-existing column keeps its name, value and meaning** — re-collecting an old leaf changes nothing but adds the six columns.
+
+**Known upstream, not fixed here.** Three residual risks live in prosapia's position parser and in AtomiUM itself; this collector does not paper over any of them:
+
+- **`_parse_positions` does not check the group count against the designed chains.** `--chains-to-design D --fixed-positions '49/12'` gives two groups for one chain and **silently pins only 49** — no error anywhere. **Compare `atomium_n_fixed` against what you meant to pin** on the first row of every run; it is the only place the discrepancy shows.
+- **`sequence_recovery` returns `0.0`, not NA, when nothing is designable.** A `seq_rec` of exactly `0.0` can therefore mean "no designable position" rather than "recovered nothing" — read it beside `n_fixed` and the chain length.
+- **The multi-chain `/` split mis-assigns residues when fixed positions precede the last designed chain.** This collector **refuses** that case (the error row quoted above) instead of producing a plausible wrong `sequence_full`; the underlying parser does not.
+
+**What has NOT been checked** (the reinsertion was exercised only on a synthetic output dir built from the real values of one sampled design, plus four deliberately broken variants):
+
+- **A fixed-positions run on a MULTI-CHAIN design.** No such run exists here; the collector refuses it with an error rather than guessing how the `/`-joined FASTA lines up with the fixed list. If a campaign needs it, that is an edit, not a reinterpretation.
+- **A PDB with insertion codes, or with chains that `parse_multiple_chains.py` renumbers**, so that the 1-based positions in `fixed_pdbs.jsonl` do not index `seq_chain_<X>` the way assumed. `init_matches_parsed` is what would catch it — the row would error rather than reinsert at the wrong place — but no such input has been run through.
+- **Fixed positions on a chain that is not the designed chain**, and the case where `assigned_pdbs.jsonl` is absent while fixed positions exist (`--fixed-positions` requires `--chains-to-design` at submit, so it should be impossible).
+- **Whether `atomium_seq_rec` is weighted the way you would expect over the designable subset** — only that its denominator is that subset, inferred from the file format, not read in atomium.py.
 
 ### There is no score column — this changes how you rank
 

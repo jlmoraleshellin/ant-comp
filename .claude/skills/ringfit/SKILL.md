@@ -1,6 +1,7 @@
 ---
 name: ringfit
-description: How to run the custom ringfit tool on Modal — scoring whether a binder straddles two protomers of an oligomeric target and whether it would clash with the rest of the assembly or its lipid belt. Covers --ref-structure, the target/binder chain mapping, the hotspot-numbering trap, resnum matching, and every column it collects. Load before composing a ringfit run or interpreting its columns.
+description: >-
+  Scores whether a binder straddles two protomers of an oligomeric target and clashes with the rest of the assembly or its lipid belt. Load before composing a ringfit run or interpreting its columns. Traps: the target/binder chain mapping, hotspot numbering and resnum matching.
 ---
 
 # ringfit
@@ -25,19 +26,29 @@ faces where the neighbouring protomers used to be, and the lipid-facing belt. A 
 is free to occupy either. ringfit puts the design back into the full assembly and
 measures how much of that freedom it used.
 
-## Not for a single-chain target
+## It needs exactly two target chains
 
 Its premise is **two adjacent protomers cut from a larger assembly**, plus a reference
-structure to put them back into. On a one-chain, untrimmed target `bridge_ratio` is
-undefined, `n_clash` / `min_dist_ring` / `lipid_clash` detect a failure mode that cannot
-occur, and there is no reference to align to. `ringfit_hotspot_recall` on such a target
-would be a plausible number answering a question nobody asked — and note that an
-unmatched hotspot is only a **warning** here, not an error.
+structure to put them back into. **`--target-chains` must name exactly two chains**: one
+is a hard error (`ringfit_worker.py:494-498`, `--target-chains needs exactly 2 chains`).
+
+**Never work around that with `--target-chains A,A`.** It passes every guard and scores
+chain A against itself, so `bsa_t1 == bsa_t2` by construction and
+**`bridge_ratio` comes back `1.0` for every design** — a perfect straddle of a seam that
+does not exist. The signature is a whole table of `ringfit_bridge_ratio == 1.0`.
+
+**A single protomer cut out of an oligomer is a real question, but ringfit is not the
+tool for it.** When the design has one target chain but the reference has neighbours
+(chain A of a homotrimer, say), the failure mode `n_clash` detects **can** occur: the
+binder can sit on surface the other protomers bury. That is a different measurement
+from ringfit's two-protomer one, and bending ringfit into it only manufactures a
+number.
 
 **"Did my binder hit the epitope I chose, on any target" is the `epitope` tool** — same
 hotspot idea, no assembly premise, and a hotspot the target does not have is a hard
-error. A matching `default_input_column` (`rfdiffusion3_path`) is not a reason to reuse
-this one.
+error. It is **not** a substitute for the neighbour-space question: it knows nothing
+about chains that are absent from the design file. A matching `default_input_column`
+(`rfdiffusion3_path`) is not a reason to reuse this one.
 
 ## Invocation
 
@@ -53,7 +64,7 @@ sapia collect ringfit <run_dir> --table table1
 
 | Flag | Default | Notes |
 | --- | --- | --- |
-| `--ref-structure` | **required** | Full assembly, PDB or mmCIF. **Must be a path on the runs volume** (the workstation's `/runs`); the builder `raise`s if it cannot see it, and `volume_path()` rewrites it for the task container. |
+| `--ref-structure` | **required** | Full assembly, PDB or mmCIF. **Must be a path the workstation can see under `/runs`** — a file under `<run_dir>/inputs/` is on the runs volume and is fine. The builder `raise`s if it cannot see it, and `volume_path()` rewrites it for the task container. |
 | `--input-column` | `rfdiffusion3_path` | The structure to score. `boltz_path` to score predictions, `rfdiffusion3_path` to score the designed backbone. Nothing assumes a column. |
 | `--target-chains` | `A,B` | The **design's** target chains, ordered — first is `t1`, second is `t2` in `bsa_t*` / `n_contact_res_t*`. |
 | `--ref-target-chains` | `A,B` | The **reference** chains they superimpose onto, same order. Every other reference protein chain becomes the clash check. |

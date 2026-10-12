@@ -1,13 +1,7 @@
 ---
 name: boltz
 description: >-
-  How to run the boltz structure-prediction tool on Modal — flags, its weight cache Volume,
-  timing, and the confidence columns it writes. Also covers binder complexes: why iptm is diluted
-  by chain count, where the binder-specific pair_chains_iptm/chains_ptm/PAE actually live, the
-  per-chain MSA policy flag --msa-empty-chains (target searched, de-novo binder empty) and the
-  user-side shadow tool that provides it, the forced-template schema and its silent failure modes
-  (_entity_poly_seq, label_asym_id, sequence-search fallback), and the shard-count traps. Load
-  before composing a boltz run, and before interpreting any confidence number from a complex.
+  Boltz structure prediction on Modal: flags, weight cache, timing and confidence columns. Load before composing a boltz run, and before reading any confidence number from a binder complex. Traps: `iptm` is diluted by chain count (the binder-specific numbers are `pair_chains_iptm`, `chains_ptm` and PAE), and forced templates fail silently.
 ---
 
 # boltz
@@ -182,13 +176,115 @@ staged here (`modal volume put` is unreliable on this network).
 **The script lives at `/runs/utils/boltz_template.py` in the workstation.** It is NOT under
 `$PROSAPIA_TOOLS_DIR/_utils/` — that path appeared here until 2026-09-30 and fails with `rc=2`.
 
-**`--check` does not verify everything it should.** A clean pass prints three `OK` lines
-(`label_asym_id == auth_asym_id`, `_entity_poly_seq` count vs modelled, `template chains
-present`) and **says nothing about `label_seq_id`**, even though a `.` there silently gives a
-residue no token. Until the checker covers it, verify separately before spending — with gemmi,
-count `_atom_site.label_seq_id`: it must have **zero `.` values** and exactly as many distinct
-values as the chain has residues. Measured on a good file: 0 dots, 193 distinct, 193
-`_entity_poly_seq.mon_id` rows.
+### A source chain with UNRESOLVED residues: `--keep-gaps`
+
+**Default mode compacts the declared sequence, and that is wrong for any crystal structure with
+an unbuilt loop.** Without the flag the template declares exactly what is MODELLED and numbers it
+1..N, so if the source is missing residues 6–8 and a loop at 103–110, position *i* of the
+template is no longer position *i* of the query and **every residue after the first gap is
+shifted** by the size of that gap. Nothing errors; the prediction is just forced onto the wrong
+correspondence. The only sign in the default mode is a `note:` on stderr — *"143 residues for a
+range spanning 152"* — which is easy to read as harmless.
+
+`--keep-gaps` (off by default; without it the output is unchanged — a regression suite rebuilds
+seven legacy flag combinations with a pre-change copy of the script and compares the md5 of **both**
+the CIF and the YAML, opt-in via `BOLTZ_TEMPLATE_REFERENCE`) fixes the mapping for **one
+`--residues <Src>:a-b` range per chain**:
+
+- `_entity_poly_seq` declares the **whole** range `a..b`, taking the names of unresolved positions
+  from the source's own `_pdbx_poly_seq_scheme`, matched by **author number** (the source entity
+  is usually longer than the range, so matching by position in the entity would be wrong);
+- `_atom_site.label_seq_id` of a modelled residue is `author number - a + 1`, so it has **gaps**;
+- an unresolved position gets **no atoms**. Coordinates are never invented — a filled gap would be
+  restrained by the `force`/`threshold` potential like a real one;
+- the YAML is unchanged, and each chain is still its own entity (no merging).
+
+Anything it cannot do honestly is an error, not a shorter template: a range running past the
+declared sequence, more than one range for a chain, `--renumber` or `--keep-het` at the same time,
+a source with no `_pdbx_poly_seq_scheme`, microheterogeneity (two scheme rows at one `seq_id`)
+inside the range, a modelled residue whose name disagrees with the declared name at its position,
+or an unresolved residue with no author number whose resolved neighbours disagree about the offset.
+Only the chains you ask for are read, so an oddity in a chain you do not template cannot block you.
+
+**A failed build writes nothing.** The CIF and YAML go to `<out>.tmp` / `<yaml>.tmp` and are
+renamed into place only once the checks pass; on failure both are deleted. So **an absent output
+file is the failure signal** — which is the only one that survives `sapia modal-shell --cmd`,
+since that always exits 0. Check the file exists before using it; do not trust the printed text.
+
+```bash
+sapia modal-shell --cmd 'python /runs/utils/boltz_template.py \
+    --in /runs/inputs/8Z8M_fetched.cif --out /runs/inputs/8z8m_tnf_ace.cif \
+    --chains A,C,E --rename-to A,B,C --residues A:6-157,C:6-157,E:6-157 \
+    --keep-gaps --expect-sequence <152-letter query> --allow-mismatches 1 \
+    --yaml /runs/inputs/8z8m_tnf_ace.yaml'
+```
+
+The script in the workstation is whatever copy was last staged on the **Volume** at
+`/runs/utils/boltz_template.py`; an edit in the repo does not reach it until it is staged, and a
+campaign may stage its own copy inside its run_dir. Check the md5 of the copy you are calling.
+
+**Why gaps are safe but names are not** (read from boltz `b1ebfc46`): `parse_polymer` does **not**
+use `label_seq_id` — it aligns the modelled residue **names** to `_entity_poly_seq` with
+`gemmi.align_sequence_to_polymer`. A declared residue with no atoms becomes a token with
+`is_present=False`, zeroed and unrestrained. But a modelled residue whose name differs from the
+declared name at its place is treated as absent *without advancing the polymer index*, desyncing
+everything after it, and a modelled residue missing from `_entity_poly_seq` can overrun
+(boltz issue 669, `IndexError` at `mmcif.py:588`). Both are refused at build time and by `--check`.
+
+**The query→template map is a gapless diagonal.** With `chain_id` and `template_id` both given it
+is a local BLOSUM62 alignment with gap penalty −1000 against the **declared** sequence, then
+positional, with **no identity threshold** — a wrong-length or shifted declaration is used anyway
+and silently. `--expect-sequence <query>` is the check for that: the query is upper-cased and
+stripped of whitespace, then compared position by position with the declared sequence. A length
+difference **fails**, and so does any number of differing positions above **`--allow-mismatches N`
+(default 0)** — a template shifted by k differs almost everywhere, so it fails rather than printing
+a note. A genuine point difference is legitimate and stays mapped, so allow exactly as many as you
+have read and accepted: **8Z8M's TNF needs `--allow-mismatches 1`**, for a real **L143D** — that is
+declared **position 138** of the 6–157 range, i.e. **author 143** (both numbers are printed in
+every message; 138 is not a shift).
+
+**The template is also put through the alignment Boltz itself runs.** `verify()` calls
+`gemmi.align_sequence_to_polymer` with the default scoring, exactly as `parse_polymer` does, walks
+the match string, and **fails unless every modelled residue lands on the declared position equal to
+its `label_seq_id`**. This is not a formality: a low-complexity chain (measured on a synthetic
+poly-alanine chain with a 12-residue gap) is positionally correct by construction yet gemmi scores
+a *gapless* placement higher and puts the C-terminal residues inside the gap — `8M12I`, 5 of 8
+residues moved. Such a template is refused, and nothing is written.
+
+### Checking a template
+
+`--check <file> --expect-chains A,B,C` verifies a CIF from anywhere and exits non-zero. A clean
+contiguous file still prints exactly the three familiar `OK` lines (`label_asym_id ==
+auth_asym_id`, `_entity_poly_seq` count vs modelled, `template chains present`), and a `.` in
+`label_seq_id` is now a `FAIL` of its own rather than something to check by hand.
+
+For a `--keep-gaps` file add **`--expect-declared N`** (the range length), or **`A:152,B:140`** when
+the chains differ. It then verifies per entity that the declaration is exactly that, that
+`label_seq_id` is unique, ascending and inside `1..N`, that no more residues are modelled than
+declared, and that each modelled residue's name equals the declared name at its `label_seq_id` —
+and it **prints the number and the positions of the unresolved residues per chain, with the
+modelled fraction**:
+
+```
+OK  chain A: _entity_poly_seq = 152 residues, 143 modelled at label_seq_id 4..152 (keep-gaps: declared complete, atoms only where resolved)
+    chain A: 9 unresolved position(s): 1-3,101-106; 143/152 modelled (94%)
+OK  chain A: Boltz's alignment places all 143 modelled residues at their label_seq_id
+```
+
+A build passes the declared length **per chain**, so chains with ranges of different lengths are
+each checked against their own. Without `--expect-declared` the checker recognises a gapped chain
+from its own numbering, but **only when the numbering actually has a gap**: a file that declares
+more than it models while numbering 1..M contiguously is the old silent-shift failure and still
+**FAILS**, so pass `--expect-declared` when a legitimate keep-gaps file happens to have only its
+C-terminal tail unresolved. The flip side, on a **foreign** CIF: `--check` now also *passes* a file
+whose surplus declarations sit exactly where `label_seq_id` has holes and whose names match there —
+if you wanted the old blanket refusal of any over-declaration, that case no longer gives it to you.
+
+**`--expect-modelled-min N`** fails a chain modelling fewer than `N` residues; without it, a
+template with 2 of 152 residues modelled passes quietly (the fraction line is the only hint).
+
+A modified residue (MSE and friends) is reported by name rather than normalised, because it
+compares as its parent letter in any sequence comparison.
 
 The rest of this section is why that script exists — read it before overriding any of its choices.
 
@@ -216,8 +312,10 @@ templates:
   so a too-long declaration silently shifts every residue index downstream. A common way to get
   this wrong: copied gemmi residues keep their source `subchain` label, `setup_entities()` then
   merges two chains into one entity and takes `full_sequence` from whichever came first. **Count
-  the `_entity_poly_seq.mon_id` rows per entity and check them before spending.**
-- **`_atom_site.label_seq_id` must be written and run 1..N per chain** — it is the index Boltz gives each template residue, and a `.` means that residue has no token. gemmi's `assign_label_seq_id()` only numbers residues whose `entity_type` is `Polymer`, and that flag is inherited from the source file: a plain PDB or a bare `_atom_site` mmCIF (most target files here) carries no entity annotation, so hand-built clones arrive as `Unknown` and every residue is skipped without a word. `boltz_template.py` sets it explicitly (fixed 2026-09-30) and raises if any residue is left unnumbered. The symptom, if it ever comes back: `--check` says *"declares N residues but N−k are modelled"* on a file that is otherwise correct, where k is the number of **adjacent identical residue pairs** in the sequence — the checker dedups residues on `(label_seq_id, comp_id)` and `(".", "PRO") == (".", "PRO")`. That is a real bug in the file, never a reason to loosen the check. Self-test: `uv run python utils/test_boltz_template.py`.
+  the `_entity_poly_seq.mon_id` rows per entity and check them before spending.** The one
+  legitimate exception is a `--keep-gaps` file, where the surplus declarations are exactly the
+  unresolved positions and are deliberately tokenised as absent — see above.
+- **`_atom_site.label_seq_id` must be written, and run 1..N per chain** (under `--keep-gaps`, it is instead the position in the declared range, so it skips the unresolved ones) — a `.` means that residue has no token. gemmi's `assign_label_seq_id()` only numbers residues whose `entity_type` is `Polymer`, and that flag is inherited from the source file: a plain PDB or a bare `_atom_site` mmCIF (most target files here) carries no entity annotation, so hand-built clones arrive as `Unknown` and every residue is skipped without a word. `boltz_template.py` sets it explicitly (fixed 2026-09-30) and raises if any residue is left unnumbered. The symptom, if it ever comes back: `--check` says *"declares N residues but N−k are modelled"* on a file that is otherwise correct, where k is the number of **adjacent identical residue pairs** in the sequence — the checker dedups residues on `(label_seq_id, comp_id)` and `(".", "PRO") == (".", "PRO")`. That is a real bug in the file, never a reason to loosen the check. Self-test: `uv run python utils/test_boltz_template.py`.
 - Do not template the binder chain.
 - Forced templates steer, they do not constrain. **Always superpose the predicted target chains
   back onto the template and exclude rows where the target did not land.** In one batch only

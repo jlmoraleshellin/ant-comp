@@ -1,6 +1,7 @@
 ---
 name: chainsel
-description: How to run the custom chainsel tool on Modal — extracting a named subset of chains (typically the binder chain) from a structure column into its own file, and merging split-protomer chains back into one chain per protomer. Covers --chains, --rename-to, --merge-groups, the numbering contract (--renumber / --renumber-from), the absent-chain contract, the dir-label rule, and the columns it collects. Load before composing a chainsel run, before any binder self-consistency comparison, or before running ringfit on a prediction whose target protomers came back split across two chains.
+description: >-
+  Rewrites a structure column's chains into a new file (`chainsel_path`): extract the binder, merge split protomers, or cut a chain by residue position. Load before a binder self-consistency comparison, ringfit on a split prediction, or feeding an RFdiffusion symmetric design to epitope, atomium or usalign. Trap: a wrong chain or cut does not error, so read `chain_n_res` and `chain_mean_b`.
 ---
 
 # chainsel
@@ -11,7 +12,8 @@ so it annotates the table it reads, in place, and mints no child. `-t` is requir
 **CPU-only**; the manifest builder forces `gpus_per_task = 0`, so you do not pass `-g 0`.
 
 Extracts the chains you name from each design's structure into a new file — optionally
-**merging** several source chains into one output chain — and collects its path as
+**merging** several source chains into one output chain, or **splitting** one source
+chain into several by residue position — and collects its path as
 `chainsel_path`, an ordinary structure column that `usalign`, `pyrosetta`, `ringfit` or
 a viewer then consumes like any other.
 
@@ -52,6 +54,16 @@ metrics `bsa_t1`, `bsa_t2` and `bridge_ratio` (does the binder straddle the seam
 cannot be computed *at all*. `--merge-groups "A+C:A,B+D:B"` writes the same coordinates
 back as one chain per protomer, and `ringfit --target-chains A,B` works again.
 
+### The third reason: fused subunits (split mode)
+
+RFdiffusion's symmetric mode writes **one chain per subunit that fuses the designed
+binder and the fixed target**: chains A, B, C of 212 residues each, positions 1–60 the
+diffused binder (GLY, B-factor 0) and positions 61–212 the fixed target (B-factor 1),
+with residue **numbers** running 1–60 and then 1–152 — so 60 (chain, number) pairs
+repeat inside every chain. `epitope`, `atomium` and `usalign` need binder and target as
+separate chains with unique numbering. `--split-groups` cuts them apart. See
+[Splitting a fused chain](#splitting-a-fused-chain---split-groups).
+
 ## Invocation
 
 ```bash
@@ -66,17 +78,20 @@ sapia collect chainsel <run_dir> --table table1 --dir-label pred_binder
 | Flag | Default | Notes |
 | --- | --- | --- |
 | `-i/--input-column` | **effectively required** | `default_input_column` is the sentinel `"not applicable"` (the `usalign` convention). No column is a defensible default — the tool is equally at home on `rfdiffusion3_path`, `boltz_path`, `alphafold3_path` — so the builder **raises** at submit time unless you pass a column that the table actually has. |
-| `--chains` | `""` | Chain IDs to KEEP, comma-joined — **one output chain each**. **The output order follows the order given**, so `--chains E,A` writes E first. **Required unless `--merge-groups` is given.** |
+| `--chains` | `""` | Chain IDs to KEEP, comma-joined — **one output chain each**. **The output order follows the order given**, so `--chains E,A` writes E first. **Required unless `--merge-groups` or `--split-groups` is given.** |
 | `--rename-to` | `""` | New IDs, same count and order as `--chains`. Empty keeps the originals. Use it to normalise a binder to one fixed letter across tables whose lettering differs. Two kept chains may **not** be renamed onto the same ID — that guard stays a hard error, because there it would be an accidental merge. |
 | `--merge-groups` | `""` | **Merge several source chains into one output chain.** `"<chain>[+<chain>...]:<out_id>"`, groups comma-joined: `"A+C:A,B+D:B"`. Replaces `--chains`/`--rename-to` (it states both). The only way to get two source chains into one output chain. |
 | `--out-format` | `pdb` | `pdb` or `cif`. `pdb` is what USalign and Rosetta want. With `pdb`, an output chain ID longer than one character is refused at submit time (PDB has a single chain-ID column). |
 | `--keep-het` | off | Default **strips** HETATM — ligands, ions, waters. `--keep-het` keeps them. Modified polymer residues (MSE and friends) are kept either way: the test is "tabulated amino/nucleic acid", not the HETATM flag. |
-| `--renumber` | off | Renumber each **output** chain 1..N in written order, insertion codes dropped — **continuous across a merge seam** (`A+C:A` with 41+49 residues comes out 1..90). Off preserves the source numbering. |
-| `--renumber-from` | `""` | Restore auth numbering **per source chain**: `"<chain>:<first>[-<last>]"`, comma-joined — `"A:19-59,C:107-155"`. Mutually exclusive with `--renumber`. |
+| `--split-groups` | `""` | **Cut source chains into several output chains by 1-based POSITION.** `"<chain>:<first>-<last>><out_id>[+<first>-<last>><out_id>...]"`, source chains comma-joined: `"A:1-60>D+61-212>A,B:1-60>E+61-212>B,C:1-60>F+61-212>C"`. Replaces `--chains`/`--rename-to`/`--merge-groups`/`--renumber-from` (any combination is a submit-time error). **Always renumbers** each output chain 1..N. Accepts `{expr}` placeholders. See the split section. |
+| `--renumber` | off | Renumber each **output** chain 1..N in written order, insertion codes dropped — **continuous across a merge seam** (`A+C:A` with 41+49 residues comes out 1..90). Off preserves the source numbering. **A redundant no-op with `--split-groups`**, which always renumbers. |
+| `--renumber-from` | `""` | Restore auth numbering **per source chain**: `"<chain>:<first>[-<last>]"`, comma-joined — `"A:19-59,C:107-155"`. Mutually exclusive with `--renumber`. **An error with `--split-groups`.** |
 | `-l/--dir-label` | `""` | **In practice required** — see the traps. |
 
 Reads PDB or mmCIF transparently (gemmi). Alternative conformations and hydrogens are
-dropped on read; only the **first model** is used.
+dropped on read; only the **first model** is used. The non-split modes **refuse** a kept
+chain whose residue numbering repeats inside it (see the traps) — use `--split-groups`
+for those.
 
 ## Merging chains (`--merge-groups`)
 
@@ -120,7 +135,7 @@ the wrong length is an error rather than a silently shifted numbering.
 
 | Combination | Result |
 | --- | --- |
-| neither `--chains` nor `--merge-groups` | error — chainsel needs a selection |
+| none of `--chains`, `--merge-groups`, `--split-groups` | error — chainsel needs a selection |
 | `--chains` **and** `--merge-groups` | error — they are alternatives |
 | `--rename-to` **and** `--merge-groups` | error — a group's output ID is the part after `:` |
 | `--renumber` **and** `--renumber-from` | error — both set the numbering, pick one |
@@ -141,7 +156,193 @@ Per design, recorded as data in `chainsel_status` (not a crash, no file written)
 - a merged chain whose residue numbers collide →
   `error: merged chain A of <file> (A+C) has duplicate residue numbers (1,2,...)`.
 
+## Splitting a fused chain (`--split-groups`)
+
+```
+--split-groups "A:1-60>D+61-212>A,B:1-60>E+61-212>B,C:1-60>F+61-212>C"
+                │ └┬─┘ │ └──┬─┘ │
+                │  │   │    │   └── output ID of segment 2
+                │  │   │    └────── positions 61-212
+                │  │   └─────────── output ID of segment 1
+                │  └─────────────── positions 1-60
+                └────────────────── source chain
+```
+
+Comma separates **source chains**; `+` separates one chain's **segments**; each segment
+is `<first>-<last>><out_id>`.
+
+**Premise.** Each named source chain is a concatenation of pieces you want as separate
+chains, and you know where each piece starts and ends **by position**. `<first>` and
+`<last>` are **1-based positions in the chain's residue order in the file, NOT residue
+numbers** — in a fused RFdiffusion chain the numbers repeat (binder 1–60, then target
+1–152), so a number cannot address a residue. Positions count the residues chainsel
+keeps: polymer residues only by default (waters/ligands are stripped first), every
+residue with `--keep-het`.
+
+A position is a residue **as delimited in the file text**: a new one starts at any
+change of chain/number/insertion code/name, or when an atom name + altloc repeats.
+Hydrogens and alternative conformations are then dropped **within** each residue; no
+residue is ever removed by that. Two consequences:
+
+- **Microheterogeneity counts as two positions.** Two alternative residues of different
+  names at one site (ALA altloc A + SER altloc B, same number) are two positions, and
+  **both are written** (each keeps its first conformer). The checksum will usually flag
+  it as one residue too many. Design outputs do not contain this; deposited PDB
+  entries can.
+- **A residue made only of hydrogens is an error**, not a position:
+  `error: chain A of <file> has residue(s) with no atoms left after dropping
+  hydrogens/alternative conformations, at position(s) 30`. (gemmi 0.7.5's
+  `remove_hydrogens` leaves such a residue in place with zero atoms, which would count
+  in `chain_n_res` and write nothing.)
+
+**The numbering contract, in one line: split mode ALWAYS renumbers — every output chain
+is numbered 1..N in written order, insertion codes dropped.** The source numbering
+repeats, so preserving it is not an option. `--renumber` is accepted as a redundant
+no-op; `--renumber-from` is an error. On the RFdiffusion layout the target chains come
+out 1..152 — the same numbers the target carried in the source — and the binder chains
+1..60. That is RFdiffusion's numbering, not the original target PDB's: if the target
+was renumbered by the generator, hotspots in the original numbering still need the
+offset (see the epitope skill).
+
+**Output order is ascending output ID, whatever the listing order**, residues in source
+order within each chain. The spec above writes A, B, C (targets) then D, E, F (binders).
+Listing `C:...` first changes nothing. With `--out-format cif` and multi-character IDs
+the order is plain string sort.
+
+**The coverage is a checksum.** For each source chain the segments must **tile it
+exactly**: start at position 1, run on contiguously in the order listed, no gap, no
+overlap, and **end at the chain's real residue count**. A chain not named is
+**dropped** (as with `--merge-groups`); there is no syntax to drop *part* of a chain,
+on purpose — a trimmed fit is exactly the silent failure this tool exists to prevent.
+
+### Trust columns — read these before using the file
+
+| Column | Expected on the RFdiffusion layout | What a different value means |
+| --- | --- | --- |
+| `chain_mean_b` | `A=1.00,B=1.00,C=1.00,D=0.00,E=0.00,F=0.00` | Mean B over each output chain's written atoms, 2 decimals. RFdiffusion writes B 0 on diffused (binder) residues and B 1 on fixed (target) ones. A value strictly between 0.00 and 1.00 **does** mean a mixed chain — but the converse does **not** hold: two decimals cannot show one leaked residue on a chain of about 200 residues or more (152/153 = 0.99 shows; 200/201 = 1.00 does not), and the leak shows only on the chain that *received* the residue. **Never read it without `chain_n_res`.** |
+| `chain_n_res` | `A=152,B=152,C=152,D=60,E=60,F=60` | Residues written per output chain. A count you did not design means the cut is in the wrong place. |
+| `n_chains` / `chains` | `6` / `A,B,C,D,E,F` | Fewer chains: a source chain was not named and was dropped. |
+| `n_res` | `636` | Total; equals the sum of `chain_n_res`. |
+
+Both `chain_*` columns are **NA in every other mode** (`--chains`, `--merge-groups`) —
+never 0.
+
+### Guards (submit time — the run refuses, nothing is queued)
+
+| Combination | Result |
+| --- | --- |
+| `--split-groups` with `--chains`, `--rename-to`, `--merge-groups` or `--renumber-from` | error naming every clashing flag |
+| `--split-groups` with `--renumber` | accepted; a no-op |
+| a gap (`1-60>D+62-212>A`), a start other than 1, or segments out of order | error: `gap -- segment ... leaves position N uncovered` |
+| an overlap (`1-60>D+60-212>A`) | error: `overlaps the previous one` |
+| a segment with no `>` (`A:1-60>D+61-212`), `A:60-1>D`, `A:1-60>`, `A:0-60>D`, `A:60>D`, a non-integer, a trailing `+` | error naming the segment |
+| a source chain named twice | error — give all its segments in one entry |
+| the same output ID twice anywhere in the spec | error — split mode never merges |
+| `--out-format pdb` with an output ID longer than 1 char | error (`--out-format cif` allows it) |
+
+With `{expr}` placeholders (`A:1-{binder_len}>D+{binder_len + 1}-212>A`) the spec is
+resolved and checked **per design** at submit time; a design that fails aborts the
+whole submit with `design '<name>': ...`.
+
+### Per-design errors (recorded as data in `chainsel_status`, no file, every column NA)
+
+- the segments do not end at the chain's real residue count →
+  `error: chain A of <file> has 212 residues but --split-groups 'A:1-60>D+61-211>A' covers 211`;
+- a named source chain is absent → `error: chain Z not in <file> (have: A,B,C)`;
+- a residue left with no atoms after dropping hydrogens (see the premise above);
+- the reader returned a different set or order of residues than chainsel delimited →
+  `error: chain A of <file>: the reader returned ... -- refusing to cut by position`
+  (should never happen; it is the guard on the position bookkeeping below).
+
+### Why split mode reads the file differently
+
+Measured with gemmi 0.7.5, on exactly this layout: gemmi's PDB **and** mmCIF readers
+merge a residue into an **earlier** residue of the same chain with the same number,
+insertion code and name — adjacent or not — so a target GLY numbered 12 is folded into
+binder GLY 12 as one residue with 8 atoms; and `remove_alternative_conformations` then
+**deletes** every later residue whose number repeats an earlier one. On a fused chain
+that silently removes target positions 61–120. Split mode therefore rewrites each
+residue's number to its **position** in the file text before gemmi parses it (a new
+residue starts at any change of chain/number/insertion code/name, or when an atom
+name + altloc repeats inside the current residue — so two back-to-back `GLY 3` records
+stay two residues), checks that gemmi returned exactly those positions in order, and
+only then drops alt-confs and hydrogens. Atoms, coordinates and B-factors are cloned
+unchanged. With an mmCIF output each output chain gets its own `label_asym_id` and
+entity (a clone would otherwise keep its source chain's, so binder D and target A cut
+from one chain would share `label_asym_id` A — verified, and fixed); identical chains
+are **not** merged into one entity.
+
 ## Traps
+
+**`--chains` / `--merge-groups` refuse a chain whose numbering repeats inside it**
+(since 2026-10-07). These modes use gemmi's ordinary reader, which merges or deletes
+such residues: before the guard, `--chains A` on the fused RFdiffusion layout returned
+`chainsel_status = OK` with **`n_res = 152` instead of 212**. Now that design comes back
+`error: numbering repeats inside chain A of <file>: residue GLY 1 holds the same atom
+twice (two residues merged on read); this mode would write a wrong chain -- use
+--split-groups` (or `... N residues (ALA/SER) are numbered 1; the reader would drop all
+but one -- use --split-groups`). What is checked, exactly:
+
+- only the chains you keep, and only the residues that would be written (polymer only
+  unless `--keep-het`);
+- "the same atom twice" looks at **heavy atoms of polymer residues** only — a kept
+  ligand whose carbons are all named `C` (docking/OpenBabel output) and hydrogens with
+  truncated, repeated names are legitimate and pass;
+- "numbered N" fires when **two or more** residues at one number have blank-altloc
+  atoms, or two of them share an altloc letter. **Microheterogeneity** — alternative
+  residues at one site with their own altloc letters, at most one of them with
+  blank-altloc atoms (e.g. ARG 12 with a blank backbone and an altloc-A side chain,
+  plus LYS 12 with an altloc-B side chain) — is exempt and behaves as before. A
+  fused-chain collision always fires, because binder and target residue both have
+  blank altlocs — **unless the colliding residue carries altlocs on every atom** (see
+  the known gaps below).
+- **A stripped residue sharing a number is ignored only when it comes AFTER the
+  polymer residue in the file** (the PDB/mmCIF convention: polymer first, waters
+  last). If a water numbered 5 comes *before* polymer residue 5, gemmi's reader drops
+  the **polymer** residue, the guard does not see it (the water is stripped), and the
+  design comes back `OK` one residue short. Signature: `n_res` one below the chain
+  length. Not guarded; check `n_res` on unusual inputs.
+
+**Known gaps in the guard** (reviewer, round 3; documented, not fixed — the code under
+verification is frozen). Each comes back `OK` and short:
+
+1. **One blank-altloc residue beside a fully altloc'd one at the same number.** A
+   residue whose atoms all have a blank altloc, next to another at the same number
+   whose every atom has an altloc, is accepted as microheterogeneity; the reader then
+   deletes the later residue. Status `OK`, `n_res` one short.
+2. **A fully altloc'd GLY merged into a blank-altloc GLY.** No (atom name, altloc) pair
+   repeats and there is no group of two residues, so neither check fires. The result is
+   believed to carry two N atoms in one residue; **not verified**.
+3. **A merge of non-polymer residues under `--keep-het` is no longer refused** (check
+   (a) looks at polymer residues only): `n_res` undercounts by one.
+
+All three need altlocs or kept ligands that share a number with something else. That
+is implausible for RFdiffusion, rfd3, Boltz and AF3 output, none of which write
+altlocs; it matters for deposited PDB entries. The proposed tightening is deferred:
+make (b) also fire when any residue in the group has no altloc atom at all, and make (a)
+flag a polymer residue whose heavy-atom name appears both with a blank altloc and with
+a letter.
+
+On every input the guard accepts, the output is byte-identical to before (standing test
+`test_non_split_output_is_byte_identical_to_before`, 18 cases). To keep a whole fused
+chain, use one segment: `--split-groups 'A:1-212>A'`. **Rows collected `OK` before
+2026-10-07** from a source with repeating numbering may be short. Re-run them with
+`--force` on both `run` and `collect`, or under a new `-l`: a plain re-run skips rows
+that are already `OK` (see the next trap).
+
+**A corrected spec does not replace an old cut by itself.** Reruns skip rows that are
+already `chainsel[_<label>]_status == OK`, so re-running with a fixed `--split-groups`
+under the same `-l` leaves those rows with the **old** file and the **old**
+`chain_n_res` / `chain_mean_b` strings. Pass `--force` to `run` and `collect`, or use a
+new `-l` (new columns, the old ones kept for the record).
+
+**A wrong cut that still tiles is not caught.** `A:1-59>D+60-212>A` covers all 212
+residues, so it succeeds: one binder residue lands in the target chain. Nothing errors.
+Only the trust columns show it — `chain_n_res` reads `A=153,D=59` and `chain_mean_b`
+reads `A=0.99` instead of `1.00`. `chain_n_res` is the one that always shows a wrong
+cut whose lengths you know; `chain_mean_b` misses one leaked residue on a chain of
+~200+ residues. Read both on every row before using the split file; the filter below
+does it.
 
 **An absent chain is an error, never a shorter file** — including a chain named inside
 a merge group. This is the whole point of the
@@ -202,6 +403,8 @@ did not happen.
 | `_n_chains` | How many **output** chains were written = the number of `--chains` IDs, or the number of **groups**. A merge makes it smaller than the source chain count. |
 | `_n_res` | Residues written, summed over the output chains. A merge does **not** change it — a merged chain contributes all its segments (41 + 49 = 90). Your sanity check against the expected length. |
 | `_n_atoms` | Heavy atoms written, summed the same way (hydrogens and alt-confs are already gone). |
+| `_chain_n_res` | **Trust column, split mode only (NA otherwise).** Residues written per output chain, in output-ID order: `A=152,B=152,C=152,D=60,E=60,F=60`. A string; compare it whole or parse it (below). |
+| `_chain_mean_b` | **Trust column, split mode only (NA otherwise).** Mean B-factor over each output chain's written atoms, 2 decimals, same format: `A=1.00,...,D=0.00`. On RFdiffusion output it says which chain is binder (0.00) and which target (1.00); a value strictly between means a mixed chain, but a clean-looking value does not prove a clean cut (one residue on a ~200+ residue chain does not move the second decimal) — read with `_chain_n_res`. |
 | `_status` | `OK`, `error: <reason>`, or `missing`. The only success signal. |
 
 **NA (empty) means not applicable, not zero** — the extraction failed, or no TSV was
@@ -209,6 +412,59 @@ written. A blank `_n_chains` is not "zero chains", and a blank `_path` is not "n
 to extract".
 
 On disk: `<run_dir>/<table>/chainsel[_<label>]/<name>.{pdb,cif}` plus `<name>.tsv`.
+
+**A chainsel mmCIF (`--out-format cif`) is not a Boltz forced template.** It has no
+`_entity_poly_seq`, in every mode. From a **PDB** source `label_seq_id` is `.` on every
+atom (verified, gemmi 0.7.5); from an mmCIF source it is the source's `label_seq_id`
+(`--chains`/`--merge-groups`) or 1..N per chain (`--split-groups`). Boltz templates
+need `_entity_poly_seq` and a `label_seq_id` running 1..N with no `.` (see the boltz
+skill), so build them with `utils/boltz_template.py`, not from a chainsel file.
+The per-design TSV carries `chain_n_res`/`chain_mean_b` only in split mode; in the other
+modes it is exactly the seven columns it always had.
+
+## Filter: gate on a clean split before epitope / atomium
+
+```python
+def apply_filter(df):
+    # -l split  ->  chainsel_split_*. NA rows compare False, so errors drop out.
+    return df[
+        (df["chainsel_split_status"] == "OK")
+        & (df["chainsel_split_chain_n_res"] == "A=152,B=152,C=152,D=60,E=60,F=60")
+        & (df["chainsel_split_chain_mean_b"]
+           == "A=1.00,B=1.00,C=1.00,D=0.00,E=0.00,F=0.00")
+    ]
+```
+
+The expected strings are a property of the campaign (binder and target lengths), not
+of the table: record them in the campaign log. When binder lengths vary, parse instead:
+`dict(kv.split("=") for kv in s.split(","))` gives `{"D": "60", ...}`.
+
+## Worked example: split RFdiffusion symmetric designs into binder and target chains
+
+```bash
+sapia run     chainsel <run_dir> -t table0 -i rfdiffusion_path \
+                  --split-groups 'A:1-60>D+61-212>A,B:1-60>E+61-212>B,C:1-60>F+61-212>C' \
+                  -l split
+sapia collect chainsel <run_dir> -t table0 -l split
+
+# then, on the split file (chains A,B,C = target, D,E,F = binder):
+#   epitope --design-chains D,E,F --target-chains A,B,C -i chainsel_split_path
+#   atomium --chains-to-design D,E,F --symmetry 3 -i chainsel_split_path
+```
+
+The input column is whatever holds the RFdiffusion PDBs on that table — **check it**;
+`-i` has no default. Check one design's `chainsel_split_chain_n_res` and
+`chainsel_split_chain_mean_b` before running anything on the split files.
+
+## What it is blind to
+
+- **Whether the cut is the one you meant**, beyond what the trust columns show: on
+  a source without a B-factor convention (a prediction, a relaxed model) `chain_mean_b`
+  says nothing, and only `chain_n_res` against the designed lengths guards the cut.
+- **Geometry.** It never checks that the pieces are folded, in contact or in the right
+  frame — that is `usalign` (fold), `epitope`/`ringfit` (pose).
+- **Chain identity by content.** It trusts the letters and positions you give it; a
+  present but wrong chain is extracted happily (see the traps).
 
 ## Worked example: did the binder fold?
 
@@ -318,6 +574,19 @@ numbering) and `ringfit_seq_match_frac` (should be ~1.0). A non-zero offset or a
 match means the merge or the ranges were wrong, and `bridge_ratio` would be
 wrong-but-plausible.
 
+> **gemmi is pinned to 0.7.5** in `modal_image.py` (Modal). Split mode's reader handling
+> and every measurement in this skill are 0.7.5's, and the golden byte-identical test
+> asserts the version. On a gemmi upgrade, re-check the reader behaviour (the canary
+> test) and regenerate the golden md5s **deliberately, from the pre-split baseline
+> worker** (`git show 3753f78:tools/chainsel/...`) run under the new gemmi — never from
+> the current code. On vib the workspace venv gets whatever gemmi prosapia's
+> `>=0.7.5,<0.8` resolves to; it is not pinned there.
+>
 > **Not yet run.** The tool was authored and its worker exercised locally on synthetic
 > structures; it has never been submitted to Modal. Treat the first run as a shakedown —
 > two designs, then read `chainsel_status` and `chainsel_n_res` before scaling.
+>
+> **`--split-groups` (added 2026-10-07) has not run on Modal, on vib or on a real
+> RFdiffusion file.** It is tested only on synthetic structures written to mimic the
+> described layout (`tests/test_chainsel.py`). Its first real run is a verification:
+> read `chain_n_res` and `chain_mean_b` on every row and open one split file.

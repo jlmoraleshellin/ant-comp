@@ -1,12 +1,7 @@
 ---
 name: prosapia
 description: >-
-  The prosapia workbench model and the sapia CLI contract — run_dirs, tables and lineage, create vs
-  update and how the output table is derived, the base run/collect flags, labels, the ready set, how
-  to read a table, and the traps that make a run exit 0 having submitted nothing. Load before
-  composing any sapia command, on any executor. Executor mechanics live in the worker agent and in
-  `running-a-step`; per-tool flags live in the per-tool skills; the roster of what exists comes
-  from `sapia run --help`, not from a page.
+  The prosapia workbench model and the `sapia` CLI contract: run_dirs, tables and lineage, create vs update, the base run/collect flags. Load before composing any sapia command, on any executor. Trap: several mistakes make a run exit 0 having submitted nothing. Executor mechanics live in the worker agents, per-tool flags in the tool skills.
 ---
 
 # prosapia
@@ -63,8 +58,10 @@ run_dir/
 
 ## The verbs
 
-`sapia` has exactly these: `new_run`, `run`, `collect`, `modal-shell`, `init`, `fork-tool`.
+`sapia` has exactly these: `new_run`, `run`, `collect`, `merge`, `modal-shell`, `init`, `fork-tool`.
 (`modal-shell` is the Modal executor's workstation entry point and is meaningless elsewhere.)
+
+`merge` — "Pool sibling tables (same parent) into one new child table" **Siblings means same parent**: it is for pooling tables that branched off one parent, not for pooling the ends of separate lineages. However, although not recommended, prosapia does allow pooling tables whose `parent_table` values differ (cousin tables). This feature is available for backward compatibility. Run `sapia merge --help` in case of doubt.
 
 ```bash
 sapia new_run --label <label>        # prints the run_dir path and nothing else
@@ -160,6 +157,10 @@ independent shape check that is.
 Collect has no `--table-label` — the label is part of the table name, so pass that name to `-t`
 (e.g. `-t table1_lowT`).
 
+## Filters
+
+Filters are **Python modules** that define `apply_filter(df) -> df`. They are applied to the source table before the manifest is built, so they can see the whole frame and return a subset. They must live where the tasks can see them, not on your own machine. Create a `filters/` subdir in the run_dir to keep them together. A filter is **not** a pandas-style string expression — see the traps.
+
 ## Reading tables
 
 Run these **on your executor**, wherever the run_dir actually lives (the Modal workstation, or inside
@@ -212,10 +213,6 @@ Each of these produces a *successful-looking* command that did the wrong thing.
   get `AttributeError: … does not define an 'apply_filter' function`. Passing a pandas-style string
   fails at submit with `ImportError: Could not load module from <your expression>` — measured, and it
   costs a submit.
-- **A `-f` filter module must live where the tasks can see it**, not on your own machine. Write it
-  into the run_dir through your executor and pass that path; keep filters in
-  `<run_dir>/filters/` so they do not clutter the run_dir, and **report the filter's md5 and the row
-  count it printed** — the filename alone does not say which version ran.
 - **Never `cd` into a run_dir.** Stored paths are relative to the cwd the run was launched from; a
   table collected from inside a run_dir points at files no later task can resolve.
 - **`sapia` does not run on your own machine.** Run_dirs live on the executor's storage.

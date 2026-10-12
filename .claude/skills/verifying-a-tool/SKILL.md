@@ -1,6 +1,7 @@
 ---
 name: verifying-a-tool
-description: The three independent checks a new or edited prosapia tool must pass before a campaign uses its columns — a code review that runs nothing, a real-data run under a verification label, and a deliberately bad input that must error rather than return a plausible number. Load when commissioning or editing a tool, or when asked to verify one. Explains why a passing test suite is not verification.
+description: >-
+  The three checks a new or edited prosapia tool must pass before a campaign uses its columns: a code review that runs nothing, a real-data run under a verification label, and a deliberately bad input that must error. Load when commissioning, editing or verifying a tool. A passing test suite is not verification.
 ---
 
 # Verifying a tool
@@ -60,7 +61,7 @@ It does **not** mean the tool is right for the next target. The premise is still
 
 ## Recording it
 
-The verification is a campaign step like any other: it goes to the `tracker` with its run_dir, its `verification` label, the invariant and whether it held. A tool used in a campaign whose ledger has no verification block is a tool whose columns cannot be defended later.
+The verification is a campaign step like any other: it goes to the `tracker` with its run_dir, its `verification` label, the invariant and whether it held. A tool used in a campaign whose ledger has no verification step is a tool whose columns cannot be defended later.
 
 If verification **fails**, report the raw evidence and hand it back to whoever built it. Do not patch the tool from the verification seat — the agent that fixes it should be the one that re-states the premise, and the fix then needs the three checks again.
 
