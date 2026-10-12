@@ -185,7 +185,7 @@ Read its hand-back. A `—` is a number you failed to source: send it. A trap it
 
 ### Condensing
 
-A log the writer keeps rarely needs this. **Delegate to `campaign-condenser`** for a log that already grew long (the writer will tell you when one is over ~3000 words), at the end of a phase, or before handing over to a new session. **Not before a decision is settled** — the analysis behind an open question is load-bearing until the question closes.
+A log the writer keeps rarely needs this. **Delegate to `campaign-condenser`** for a log that already grew long (the writer will tell you when one is over ~1000 words), at the end of a phase, or before handing over to a new session. **Not before a decision is settled** — the analysis behind an open question is load-bearing until the question closes.
 
 It cannot know which branch is abandoned and which is live, so tell it: the current deliverable, which decisions are settled, which open questions must survive. Without that it cuts by shape rather than relevance.
 

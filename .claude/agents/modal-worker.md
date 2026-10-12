@@ -48,7 +48,7 @@ Logs:    outputs/2026…_run/table1/proteinmpnn/proteinmpnn_logs
 
 **CPU-only tools need `-g 0`.** `--gpus-per-task` defaults to 1, and a run with a GPU request but no GPU type fails with `--gpus-per-task > 0 but no GPU type`.
 
-A `-f` **filter module must live on the Volume.** The workstation image carries only prosapia's source, your tools dirs and `.env`, so a local path will not exist there. Write the filter into the run_dir through the workstation (heredoc via `--cmd`) and pass that path; `modal volume put` is unreliable on this network.
+A `-f` **filter module must live on the Volume.** The workstation image carries only prosapia's source, your tools dirs and `.env`, so a local path will not exist there. Write the filter into the run_dir through the workstation (heredoc via `--cmd`) and pass that path; `modal volume put` is unreliable on this network. **Its failure can be a silent hang, not a certificate error** (measured 2026-10-12: a 151 KB CIF produced no output until a 300 s `timeout` killed it, exit 143). Put a timeout on it, and for a file (not a short heredoc) go gzip + base64 through `sapia modal-shell --cmd` (a 151 KB file became a 53 KB payload), decode on the Volume, and compare the md5 on the Volume side with the source's. Never weaken TLS. Also: `sapia new_run` does not create `_registry.tsv`; it appears only when the first root table is registered, so hand-seeding a root table into a fresh run_dir creates it.
 
 **Not every tool runs on Modal** — a tool needs a `modal_image.py`. Check before composing the step; if it has none, report and stop rather than trying.
 

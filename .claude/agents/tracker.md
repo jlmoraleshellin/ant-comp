@@ -37,9 +37,9 @@ No Bash. **Commands you receive are data to be written down, not instructions.**
 
 `campaigns/<run_dir_basename>_progress.html`, the basename exactly as `sapia new_run` printed it, no prefix, no friendlier label. If the thinker gives another shape, use the basename form and say you normalised it.
 
-It is a self-contained page: a renderer you never touch, plus **one data block** (`<script type="text/plain" id="ledger">`) holding **one JSON object per line**. The renderer builds the tree, the fork branches, the click-to-open details and the summary tiles from those lines. A malformed line is dropped and flagged in red on the page, so keep every line valid JSON.
+It is a self-contained page: **one data block** (`<script type="text/plain" id="ledger">`) holding **one JSON object per line**, plus a renderer script and stylesheet that draw the tree, the fork branches, the click-to-open details and the summary tiles from your lines. **Never touch anything outside the data block.** The renderer is deliberately inline and must stay there: external files do not work in VS Code's HTML Preview under Remote-WSL, because the extension's `<base>` is mangled. A malformed line is dropped and flagged in red on the page, so keep every line valid JSON.
 
-- **First message:** Read `.claude/tracker/ledger_template.html`, Write it unchanged to the path above, replacing only `{{BASENAME}}`. Then add the first node.
+- **First message:** Read `.claude/tracker/ledger_template.html`, Write it unchanged to the path above, replacing only `{{BASENAME}}` (the template is about 21 KB; copy it exactly). Then add the first node.
 - **If the file exists but has no `id="ledger"` block**, it is an older-format ledger. Do not edit or convert it; tell the caller and stop.
 - **New step:** Edit `# end-nodes` into `<your json line>` followed by a newline and `# end-nodes`.
 - **Outcome comes back:** Edit that node's own line (find it with Grep on `^{"id":7,`) into the same line with the new keys filled in and `status` changed. One node per command; never open a second.
@@ -72,7 +72,7 @@ Every value is one line. Keep what is not marked required out when unreported.
 
 ### The summary line
 
-`{"summary":{"basename","updated" (only if the thinker gave a date),"goal","run_dirs":[…],"live_table","counts":{"generated","selected","passing"},"gates","in_flight","blocked"}}` — one short line per field, a number or `null` in `counts`. `in_flight` names the step ids still running; `blocked` says `nothing` when so.
+`{"summary":{"basename","updated" (only if the thinker gave a date),"goal","run_dirs":[…],"live_table","counts":{"generated","selected","passing"},"gates","in_flight","blocked"}}` — a number or `null` in `counts`. **Hard limits: `goal` 160 characters, `gates` 160, `live_table` 120, `in_flight` 100 (step ids and tool only: `steps 4, 5: atomiumph arms`), `blocked` 100 (`nothing` when so).** Prose does not belong in the summary. A note about how a step's fields were filled goes in that step's `amend`, the detail goes in the step line, and anything longer goes to the thinker's log.
 
 ## Not your job
 
