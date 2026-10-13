@@ -164,42 +164,47 @@ workstation. Set `NO_COLOR=1` before parsing their output — ANSI codes break J
 ## Execution model B: the VIB DataCore (SLURM)
 
 No containers here. `sapia` runs from the workspace and submits SLURM array jobs; each
-tool's environment comes from an activation script. Everything goes over one ssh hop,
-configured from **this repo's `.env`**: `SAPIA_VIB_HOST`,
-`SAPIA_VIB_WORKSPACE`, `SAPIA_VIB_ACTIVATE`, `SAPIA_VIB_ACCOUNT`
-(worker-only), plus the `SAPIA_ACTIVATE_*` entries, which prosapia itself reads on
-the compute node.
+tool's environment comes from an activation script. Everything goes through **one script,
+`scripts/vib.sh`** — the only sanctioned way to reach the cluster; full contract in
+`docs/vib.md`. Its personal inputs are the three `SAPIA_VIB_*` values in section 1 of
+**this repo's `.env`** (host, workspace, account); the `SAPIA_ACTIVATE_*` entries below them
+are read by prosapia itself on the compute node.
 
 ```bash
-set -a; . ./.env; set +a
-bash scripts/vib_sync.sh                      # push the working tree (before every submit)
-timeout 120 ssh -o BatchMode=yes -o ConnectTimeout=20 -x "$SAPIA_VIB_HOST" \
-  "cd $SAPIA_VIB_WORKSPACE && $SAPIA_VIB_ACTIVATE && <command>"
+bash scripts/vib.sh exec --sync --on-node '<command>'   # push the working tree, then run in a small srun (use for `sapia run`)
+bash scripts/vib.sh exec --on-node '<command>'          # `sapia collect`, anything reading tables (2 cpus, 8G, 30 min)
+bash scripts/vib.sh exec '<command>'                    # login node: squeue / sacct / sinfo polls and logs only
+bash scripts/vib.sh status                    # marker, venv, prosapia commit vs pin, uv
 
 # anything heavier than a scheduler query goes in an allocation:
-#   srun -A "$SAPIA_VIB_ACCOUNT" -c 8 -t 1:0:0 bash -lc '<command>'
+#   bash scripts/vib.sh exec 'srun -A "$SAPIA_VIB_ACCOUNT" -c 8 -t 1:0:0 bash -lc "<command>"'
 ```
 
 Non-negotiables, each learned the hard way:
 
-- **Rsync before every submit.** `outputs/` and `.venv/` live inside the workspace and are
-  never synced: `--exclude` protects them from `--delete` (measured), and the `protect`
-  filters hold even under `--delete-excluded`, which `--exclude` does not. **Never add
-  `--delete-excluded`** — it deletes them outright. Not needed before poll calls.
+- **Sync before every submit** (`exec --sync`). Only `tools/ activation/ utils/ .env`
+  travel, and `--delete` acts only inside those directories, so `outputs/` and `.venv/`
+  cannot be reached. The sync refuses unless the remote workspace holds a
+  `.sapia-workspace` marker. Not needed before poll calls.
 - **Do real work in an allocation, never on the login node.** `srun -A "$SAPIA_VIB_ACCOUNT"
   -c 8 -t 1:0:0 bash -lc '<cmd>'` (or `salloc -c 8 -t 12:0:0` for a human shell). `-A` is
   required on `srun`/`salloc` just as on `sbatch`, and `bash -lc` is what makes `module`
   available. Measured: a venv build on the login node wedged twice, and took minutes on a
   compute node. Scheduler queries (`squeue`/`sacct`/`sinfo`) are fine on the login node.
-- **No `uv` on vib.** The venv is built by `scripts/vib_bootstrap.sh` from the `Miniconda3`
-  module's Python (3.12) with stdlib `venv`/`pip`, pinned to the prosapia commit read from
-  `uv.lock`. On this cluster `uv` exists only under one user's home, so it cannot be
-  assumed. rsync never touches the venv, but it **does** ship `uv.lock` — so after a pin
-  bump the cluster silently runs the old library until someone re-runs the bootstrap.
-- **Always `cd` to `$SAPIA_VIB_WORKSPACE` first.** Two reasons: a SLURM task starts in the
-  submit directory and its prelude sources `.env` relative to it, and `PROSAPIA_TOOLS_DIR`
-  defaults to the literal `tools` resolved against the cwd. Submit from anywhere else and
-  the custom tools vanish and every task dies with
+- **No `uv` on vib.** The venv is built by `bash scripts/vib.sh bootstrap` from the
+  `Miniconda3` module's Python (3.12) with stdlib `venv`/`pip`, pinned to the prosapia
+  commit read from `uv.lock`. On this cluster `uv` exists only under one user's home, so it
+  cannot be assumed. rsync never touches the venv, so after a pin bump the cluster silently
+  runs the old library until someone re-runs `bootstrap` — `vib.sh status` shows the
+  mismatch. If `uv.lock` points at the editable `../prosapia`, `bootstrap` stops and needs
+  `--commit <pushed sha>`.
+- **Commands always start in `$SAPIA_VIB_WORKSPACE`, and never `cd`.** `vib.sh exec`
+  does the `cd` itself and refuses `cd`, `..`, `~`, absolute paths outside the workspace and
+  an `rm` outside the workspace (an accident guard, not a sandbox; removals inside it are
+  allowed). Why the cwd matters: a SLURM task
+  starts in the submit directory and its prelude sources `.env` relative to it, and
+  `PROSAPIA_TOOLS_DIR` defaults to the literal `tools` resolved against the cwd. Submit from
+  anywhere else and the custom tools vanish and every task dies with
   `sapia: set SAPIA_ACTIVATE_<TOOL> in your .env`.
 - **`--partitions <name>:<gpu_count>`, never the bare name.** prosapia's GPU-count query
   splits `sinfo -o %G` on `:` and this cluster reports `gpu:h100:4(S:0-1)`, so the bare
@@ -222,10 +227,10 @@ Non-negotiables, each learned the hard way:
   traceback. If the variable is empty, ask the user — never guess a value.
 - **Certificates expire.** Auth is a short-lived SSH cert from a Smallstep CA via an Azure
   AD browser sign-in. If an ssh call hangs or says `Permission denied`, **stop and ask the
-  user to sign in** — never retry in a loop. Always wrap ssh in `timeout`.
+  user to sign in** — never retry in a loop. `vib.sh` wraps every ssh in `timeout`.
 - **The login node and filesystem are shared with the lab.** Only scheduler queries and
   quick inspection belong there; everything else goes in an allocation. Never touch
-  another user's directories, or anything under the shared `$SAPIA_VIB_SHARED_ENV`.
+  another user's directories, or anything under the shared `$SAPIA_VIB_SHARED_ACTIVATION`.
 - **`-g 0` for CPU-only tools**, same as Modal.
 
 ### Task status: the SLURM loop
@@ -292,10 +297,9 @@ cert). Note `SAPIA_EXECUTOR` is **not** set here: the Modal workstation exports
 | `SAPIA_MODAL_VOLUME_BOLTZ_CACHE` | `boltz-cache` | Boltz weights + CCD, mounted at `/boltz_cache`. |
 | `SAPIA_MODAL_VOLUME_BINDCRAFT_CACHE` | `bindcraft-cache` | BindCraft2's AlphaFold params (~5.3 GB). |
 | `SAPIA_VIB_HOST` | `vib` | ssh alias for the DataCore login node (`~/.ssh/config`). |
-| `SAPIA_VIB_WORKSPACE` | `/data/groups/csb/…/jlmorales/workspace/ant-comp` | The rsync'd copy of this repo, holding its own `.venv` and `outputs/`. Every remote command runs from here. Per user. |
-| `SAPIA_VIB_ACTIVATE` | `source .venv/bin/activate` | Puts `sapia` on PATH, after cd-ing there. |
+| `SAPIA_VIB_WORKSPACE` | see `.env` | The rsync'd copy of this repo, holding its own `.venv` and `outputs/`. Every remote command runs from here. Per user. |
 | `SAPIA_VIB_ACCOUNT` | `anastassia_vorobieva` | SLURM account for `-a`. **Required** — the cluster rejects jobs without an explicit `-A`. |
-| `SAPIA_VIB_SHARED_ENV` | `…/envs/prosapia-workstation-dev` | The shared env, referenced read-only for the built-ins' activation scripts. |
+| `SAPIA_VIB_SHARED_ACTIVATION` | see `.env` | The lab's activation scripts for the built-in tools, read-only. The software they activate is installed on the cluster, not in this repo. |
 | `SAPIA_ACTIVATE_*` | absolute paths | Read by prosapia on the compute node. Inert under Modal. |
 | `CONDA_PREFIX`, `RFD3_CKPT` | see `.env` | Needed by the shared activation scripts; copied from the shared env's `.env`. |
 

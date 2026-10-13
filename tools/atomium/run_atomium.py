@@ -2,7 +2,8 @@
 
 AtomiUM is a ProteinMPNN-like sequence designer (a PyG re-implementation with
 noise-conditioned weights), and it ships ProteinMPNN's own helper scripts under
-``proteinMPNN_helper_scripts/``. Its jsonl interface is the same one
+``proteinMPNN_helper_scripts/`` (on Modal; off Modal the activation script supplies
+the helper directory, see ``atomium.sh``). Its jsonl interface is the same one
 (``--jsonl_path``, ``--chain_id_jsonl``, ``--fixed_positions_jsonl``,
 ``--tied_positions_jsonl``, ``--bias_AA_jsonl``), so this builder is deliberately
 the proteinmpnn builder with the same two mini-languages and the same batching:
@@ -44,9 +45,12 @@ What differs from the proteinmpnn tool, all verified against the checkout:
   * ``--model-noise`` picks the weights (``model_noised_=_<noise>.pt``) and replaces
     ProteinMPNN's model-name/backbone-noise knobs. AtomiUM has no ``--ca_only``,
     ``--use_soluble_model``, ``--save_score`` or ``--save_probs``.
-  * There is no ``--batch-size``: the flag exists in ``atomium.py`` but is dead --
-    ``BATCH_COPIES`` is computed as ``num_seq_per_target * len(temperatures)``, so
-    the sampling count is driven entirely by those two.
+  * This tool exposes no ``--batch-size``. CORRECTED 2026-10-11: ``atomium.py``'s own
+    ``--batch_size`` was DEAD at commit 292e29c, which is what this note used to say,
+    but it is LIVE at the pinned commit dee5a4d67ae02293cee59f86c86085c8fa11879d --
+    default 0, meaning chunks are created dynamically up to the maximum node budget.
+    It affects CHUNKING ONLY. The sampling count is unchanged and is still
+    ``num_seq_per_target * len(temperatures)``.
   * ``--sampling-temp`` may carry SEVERAL temperatures, and each one produces a full
     ``--num-seq-per-target`` set (so N temps => N x num_seq sequences per design).
     It therefore travels as its own manifest field and is quoted in the task script;

@@ -42,9 +42,10 @@ Host vib
     User <your-username>
 ```
 
-Set your two personal values in `.env`:
+Set your personal values in section 1 of the vib part of `.env`:
 
 ```bash
+SAPIA_VIB_HOST="vib"
 SAPIA_VIB_WORKSPACE="/data/groups/csb/<...>/<you>/ant-comp"   # yours; anywhere on group storage
 SAPIA_VIB_ACCOUNT="anastassia_vorobieva"                      # required on every job
 ```
@@ -52,8 +53,10 @@ SAPIA_VIB_ACCOUNT="anastassia_vorobieva"                      # required on ever
 Then build the workspace — creates it, syncs this repo into it, and builds its venv from the `Miniconda3` module on a compute node:
 
 ```bash
-bash scripts/vib_bootstrap.sh    # ~5 min
+bash scripts/vib.sh bootstrap    # ~5 min
 ```
+
+For vib alone you need only `bash`, `ssh`, `rsync`, `timeout` and `python3` on your machine — `uv` is needed for Modal, never for vib. Everything else about the vib connection is in [`docs/vib.md`](docs/vib.md).
 
 Auth is a short-lived SSH certificate via a Microsoft browser sign-in. When it lapses the next `ssh` opens a sign-in page and waits — so if Claude reports that ssh hung, that is your cue to sign in.
 
@@ -112,7 +115,8 @@ CLAUDE.md          standing context, read at every session start
 .claude/skills/    one SKILL.md per tool, plus binder-campaign and the process skills
 tools/             custom prosapia tools
 activation/vib/    the SLURM half of each custom tool (what modal_image.py is on Modal)
-scripts/           vib_bootstrap.sh, vib_sync.sh
+scripts/           vib.sh — the one way to reach the cluster
+docs/              vib.md
 campaigns/         campaign reports — the scientific record
 ```
 
@@ -128,7 +132,7 @@ Pull before you start. If you have uncommitted edits, park them: `git stash`, `g
 
 Share improvements back on a branch. Skills and campaign reports are the point of the shared repo: a trap you wrote down is a trap nobody else hits. Keep run outputs, loose `.cif`/`.pdb` dumps and `.venv` out of commits.
 
-To move the prosapia pin: `uv lock --upgrade-package prosapia && uv sync`, test both backends, then commit `uv.lock`. **This does not update vib by itself** — re-run `scripts/vib_bootstrap.sh`, or the cluster keeps running the old library silently.
+To move the prosapia pin: `uv lock --upgrade-package prosapia && uv sync`, test both backends, then commit `uv.lock`. **This does not update vib by itself** — re-run `bash scripts/vib.sh bootstrap`, or the cluster keeps running the old library silently (`bash scripts/vib.sh status` shows the mismatch).
 
 ---
 
