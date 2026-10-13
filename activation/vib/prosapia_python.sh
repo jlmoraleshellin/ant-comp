@@ -1,5 +1,7 @@
 # Activation for the pure-Python custom tools on the VIB DataCore:
-# `mkcomplex`, `chainsel`, `ringfit`. Point each one's SAPIA_ACTIVATE_<NAME> here.
+# `mkcomplex`, `chainsel`, `ringfit`, `ifacegeom`, `dimerfit`, `af3conf`, `boltzconf`,
+# `epitope`, `hisbond`, `linkpath`, `trifuse`. Point each one's SAPIA_ACTIVATE_<NAME> here.
+# NOT for `propka` (needs the propka package) or `dockq` (needs DockQ, which pins numpy < 2).
 #
 # This file is the SLURM counterpart of a tool's `modal_image.py` — same job
 # (provide the runtime), different mechanism. It is sourced by the tool's task

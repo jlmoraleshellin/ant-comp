@@ -12,13 +12,14 @@ set -euo pipefail
 # Shared scaffolding: sets MANIFEST/OUT_DIR/SAPIA_TASK_ID/SAPIA_LINE.
 source "${SAPIA_PRELUDE:?}"
 
-# Site-specific activation (required off Modal) — a no-op under Modal, where the
-# image supplies $ATOMIUMPH. This tool is Modal-only today: there is no
-# SAPIA_ACTIVATE_ATOMIUMPH anywhere, so a slurm task would stop here with a clear
+# Site-specific activation (slurm-only). SAPIA_ACTIVATE_ATOMIUMPH must point at an
+# activation script that exports ATOMIUMPH (the checkout) and, if `python` is not already
+# the right interpreter, ATOMIUMPH_PYTHON; without it a slurm task stops here with a clear
 # message rather than running against the wrong environment.
 sapia_activate SAPIA_ACTIVATE_ATOMIUMPH
 
 ATOMIUMPH_PYTHON=${ATOMIUMPH_PYTHON:-python}
+: "${ATOMIUMPH:?ATOMIUMPH must point at the AtomiUM-pH checkout (the image sets it on Modal; the activation script elsewhere)}"
 
 # One task = one sub-manifest listing the subgroups packed onto it. Each subgroup is a
 # grp_<g>/ dir whose inputs/ holds symlinked complexes that share parameters, so it runs

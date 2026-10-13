@@ -17,7 +17,21 @@ source "${SAPIA_PRELUDE:?}"
 sapia_activate SAPIA_ACTIVATE_ATOMIUM
 
 ATOMIUM_PYTHON=${ATOMIUM_PYTHON:-python}
-HELPERS="${ATOMIUM:?}/proteinMPNN_helper_scripts"
+: "${ATOMIUM:?ATOMIUM must point at the AtomiUM checkout (the image sets it on Modal; the activation script elsewhere)}"
+
+# ProteinMPNN's helper scripts. On Modal they ship inside the AtomiUM checkout. On vib that
+# checkout has no proteinMPNN_helper_scripts/, so the vib ACTIVATION SCRIPT exports PROTEINMPNN_HELPERS,
+# the cluster's ProteinMPNN `helper_scripts` directory itself. 
+HELPERS=${PROTEINMPNN_HELPERS:-"$ATOMIUM/proteinMPNN_helper_scripts"}
+# All four are checked up front: a missing one would otherwise kill the task mid-loop
+for h in parse_multiple_chains assign_fixed_chains make_fixed_positions_dict make_tied_positions_dict; do
+    if [ ! -f "$HELPERS/$h.py" ]; then
+        echo "atomium: no $h.py in HELPERS='$HELPERS' (PROTEINMPNN_HELPERS='${PROTEINMPNN_HELPERS:-}', ATOMIUM='$ATOMIUM'). PROTEINMPNN_HELPERS must be ProteinMPNN's helper_scripts directory itself, not its install root." >&2
+        exit 1
+    fi
+done
+# Provenance: which helper source this run used (the .out is the only place it is recorded).
+echo "atomium: HELPERS=$HELPERS"
 
 # One task = one sub-manifest listing the subgroups packed onto it. Each subgroup is
 # a grp_<g>/ dir whose inputs/ holds symlinked PDBs that share params, so it runs as

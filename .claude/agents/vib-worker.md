@@ -24,39 +24,35 @@ You execute prosapia steps on the **vib HPC cluster** with the **SLURM** executo
 
 **Do real work in an allocation, never on the login node.** The login node is shared and heavily throttled. *Measured:* a venv build on the login node wedged partway through, twice, and completed in minutes once moved to a compute node.
 
-**Never cd into a different folder.** Work always in `SAPIA_VIB_WORKSPACE`.
+**You never `cd`.** `scripts/vib.sh` starts every command in `SAPIA_VIB_WORKSPACE` and refuses `cd`, `pushd`, `..`, `~`, `$HOME`, absolute paths outside the workspace, ssh/rsync from the cluster, and `rm` outside the workspace or of the workspace root. The guard allows any removal inside it, so the rule below on what you delete is yours to keep. A refusal (exit 3) is a wrong command, not an obstacle: fix the command, do not look for another way in. Do not call `ssh`, `rsync` or `scp` yourself.
 
 ```bash
-srun -A "$SAPIA_VIB_ACCOUNT" -c 8 -t 1:0:0 bash -lc '<command>'
+bash scripts/vib.sh exec --on-node '<command>'            # 2 cpus, 8G, 30 min, ssh timeout 1800 s
+bash scripts/vib.sh exec --sync --on-node '<sapia run …>' # submit from a compute node
+bash scripts/vib.sh exec --on-node --cpus 4 --mem 16G --walltime 1:00:00 '<command>'
 ```
 
-`bash -lc` is what makes `module` available — it is a shell function from `/etc/profile.d`, and a plain non-interactive ssh command does not have it. `-A` is required on `srun` and `salloc` exactly as on `sbatch`. The human equivalent for a long session is `salloc -c 8 -t 12:0:0`.
+`--on-node` wraps the command in `srun -A <account> … bash -lc`, starts it in the workspace with the venv active, and drops the allocation's own `SLURM_*` variables so a `sapia run` inside it submits arrays with the resources you asked for, not the small allocation's. Compute nodes may run `sbatch` (the user confirmed). Anything heavier than 8 cpus: write the `srun` yourself (`bash -lc` is what makes `module` available; `-A` is required on `srun` and `salloc` exactly as on `sbatch`). The human equivalent for a long session is `salloc -c 8 -t 12:0:0`.
 
-**The exception** is cheap read-only scheduler queries — `squeue`, `sacct`, `sinfo`, reading a log — fine directly on the login node. `sapia run` (manifest build + `sbatch`) is light enough to submit directly; **`sapia collect` over a large table is not — allocate for that.** Never run a tool's actual compute on the login node: no `boltz predict`, no `bash <tool>.sh` by hand outside `srun`/`sbatch`.
+**Give short `--on-node` calls (`new_run`, `--help`, a submit, a collect) `--timeout 240`.** The default is 1800 s to match the allocation, and an `--on-node` call that hangs holds an `srun` for that long; *measured:* one `new_run` hung past 300 s with no output and no run_dir, the identical call then took 4 s (cause unknown). After any hang check `squeue -u $USER -o "%i %P %T %R %j %M"` for an orphaned `sapia_node` job.
+
+**Use `--on-node` for `sapia run`, `sapia collect`, and anything that reads a table or a structure.** **Run directly on the login node only** cheap read-only scheduler queries — `squeue`, `sacct`, `sinfo`, `tail` of a log — i.e. the polling loop. Never run a tool's actual compute on the login node: no `boltz predict`, no `bash <tool>.sh` by hand outside `srun`/`sbatch`.
 
 ## The connection
 
-| Variable (in **this repo's `.env`**) | Meaning |
-| --- | --- |
-| `SAPIA_VIB_HOST` | ssh host alias (`~/.ssh/config`) |
-| `SAPIA_VIB_WORKSPACE` | an rsync'd copy of this repo, with its own `.venv`. **Every command runs from here.** |
-| `SAPIA_VIB_ACTIVATE` | command that puts `sapia` on PATH, run after cd-ing there |
-| `SAPIA_VIB_ACCOUNT` | SLURM account. **Required on every run** — the cluster rejects jobs without `-A`. |
-
-The same `.env` also carries `SAPIA_ACTIVATE_*` entries, which **are** read by prosapia — on the compute node, by `sapia_activate` in the task prelude.
-
-Every remote command goes through this one pattern:
+Everything goes through **one script**, run from this repo's root. The full contract is `docs/vib.md`; `bash scripts/vib.sh help` lists the commands.
 
 ```bash
-set -a; . ./.env; set +a
-timeout 120 ssh -o BatchMode=yes -o ConnectTimeout=20 -x "$SAPIA_VIB_HOST" \
-  "cd $SAPIA_VIB_WORKSPACE && $SAPIA_VIB_ACTIVATE && <command>" 2>&1 \
-  | grep -v -e 'Provisioner' -e 'X11' -e 'xauth'
+bash scripts/vib.sh exec '<command>'             # run in the workspace, venv active, .env loaded
+bash scripts/vib.sh exec --sync '<command>'      # push the working tree first
+bash scripts/vib.sh exec --timeout 600 '<command>'
+bash scripts/vib.sh status                       # marker, venv, prosapia commit vs pin, uv
 ```
 
-- Run it from this repo's root (the one with `.env`). Wrap `<command>` so it survives the outer double quotes: prefer single quotes inside, and escape any `$` that must expand **on vib** (`\$USER`), not locally.
-- `-o BatchMode=yes` is mandatory — you cannot answer a prompt. `-x` avoids X11 noise.
-- **Wrap every call in `timeout`.** `ConnectTimeout` does not cover the certificate step, which can block indefinitely waiting on a browser sign-in. Raise the outer timeout for a slow command, never drop it.
+- **Put the command in single quotes.** `$SAPIA_VIB_WORKSPACE` and `$SAPIA_VIB_ACCOUNT` then expand **on vib**, from the synced `.env` — there is no escaping to do, and no local copy of them to read.
+- The script wraps ssh in `timeout` (default 120 s; raise it with `--timeout`, never drop it), sets `BatchMode`, filters the Provisioner/X11 noise, and keeps the real exit code.
+- Its only personal inputs are `SAPIA_VIB_HOST`, `SAPIA_VIB_WORKSPACE` and `SAPIA_VIB_ACCOUNT` (section 1 of `.env`). If the account is empty, stop and ask; never guess one.
+- The same `.env` also carries `SAPIA_ACTIVATE_*` entries, which **are** read by prosapia — on the compute node, by `sapia_activate` in the task prelude.
 
 **Authentication.** vib uses short-lived SSH certificates from a Smallstep CA, obtained through a Microsoft (Azure AD) sign-in in the user's browser. While a certificate is valid, calls just work. When it expires, the next ssh opens the sign-in page and waits. **If an ssh call hangs, or fails with `Permission denied`, stop and ask the user to complete the sign-in** (or to run `! ssh vib true` themselves). Do not retry in a loop.
 
@@ -78,21 +74,22 @@ It prints the absolute run_dir; pass exactly that to every later `run` and `coll
 ## Sync before every submit
 
 ```bash
-bash scripts/vib_sync.sh
+bash scripts/vib.sh exec --sync 'sapia run ...'     # sync, then submit
+bash scripts/vib.sh sync --dry-run                  # what would change
 ```
 
-This is what makes vib feel like Modal: the user edits a tool or an activation script locally and it is live on the next run, with no commit and no push. Run it from this repo's root **immediately before a `sapia run`** — ~1 MB, a second or two. Do **not** sync before poll calls. **Say in your report that you synced**, or that you skipped it because nothing changed.
+This is what makes vib feel like Modal: the user edits a tool or an activation script locally and it is live on the next run, with no commit and no push. Use `exec --sync` **for the `sapia run` itself**, never for poll calls. **Say in your report that you synced**, or that you skipped it because nothing changed.
 
-**`outputs/` and `.venv/` live inside the workspace and must never be synced.** `--exclude` alone already protects them from `--delete` (measured), but the `protect` filters survive `--delete-excluded` too and `--exclude` does not. **Never add `--delete-excluded`** — measured, it deletes the excluded directories outright, and `outputs/` is every result you have.
+The sync is an **allowlist**: only `tools/`, `activation/`, `utils/` and `.env` travel, and `--delete` acts only inside those directories — `outputs/` and `.venv/` cannot be reached. It refuses unless the remote workspace holds the `.sapia-workspace` marker; if it says so, report it and stop (the fix is `bash scripts/vib.sh init --adopt`, which is the user's call).
 
-**The venv goes stale silently.** It is built once by `bash scripts/vib_bootstrap.sh` from the repo root on the user's machine, and rsync never touches it afterwards. `uv` is not used on vib at all — it exists there only as a per-user install under one person's home, so it cannot be assumed. The bootstrap uses the `Miniconda3` module's Python (3.12) with stdlib `venv` and `pip`, and pins prosapia to the exact commit read from `uv.lock`, so vib and Modal run the same library.
+**The venv goes stale silently.** It is built once by `bash scripts/vib.sh bootstrap` and rsync never touches it afterwards. Nothing on vib uses `uv`: the build uses the `Miniconda3` module's Python (3.12) with stdlib `venv` and `pip`, and pins prosapia to the commit in `uv.lock`, so vib and Modal run the same library.
 
-The trap: **`uv.lock` is synced but the venv is not.** Bumping the prosapia pin locally leaves the cluster on the old library with no signal and no automatic repair. Check with `.venv/bin/pip show prosapia | grep Version` against the commit in `uv.lock`, and **when `uv.lock` has changed, tell the user to re-run `scripts/vib_bootstrap.sh`** rather than silently running against a stale venv.
+The trap: bumping the prosapia pin locally leaves the cluster on the old library with no signal. **Run `bash scripts/vib.sh status` at the start of a session and after any `uv.lock` change**; if it prints `pin: MISMATCH`, tell the user to re-run `bootstrap` rather than running against a stale venv. If `uv.lock` points at the editable `../prosapia`, `bootstrap` stops and needs `--commit <pushed sha>` — that is the user's call too.
 
 ## 1. Submit
 
 ```bash
-... "cd $SAPIA_VIB_WORKSPACE && $SAPIA_VIB_ACTIVATE && sapia run <tool> $SAPIA_VIB_WORKSPACE/outputs/<run> [-t <table>] --executor slurm -a $SAPIA_VIB_ACCOUNT [slurm flags] [tool flags]"
+bash scripts/vib.sh exec --sync 'sapia run <tool> $SAPIA_VIB_WORKSPACE/outputs/<run> [-t <table>] --executor slurm -a $SAPIA_VIB_ACCOUNT [slurm flags] [tool flags]'
 ```
 
 `--executor` defaults to `$SAPIA_EXECUTOR`, else `slurm`, and the vib `.env` sets it to `slurm` — so passing it is a cheap guard, not a requirement. Pass it anyway.
@@ -116,13 +113,13 @@ sbatch: error: Please update your submission to include a valid slurm account (-
 
 **GPU jobs need `--partitions`.** The default partition `gp_64C_128T_512GB` has no GPUs (verified: `sinfo -o '%P %G'` shows `(null)`), so a GPU task submitted without `--partitions` never runs.
 
-**Prefer a `_co_pi` partition whenever one exists for the GPU you want** — those are this group's entitlement. Use a non-`co_pi` partition only where there is no `_co_pi` equivalent. Do not send work to a plain `gpu_h100_*` or `gpu_b300_*` just because `sinfo` lists it idle.
+**Where a GPU type has a `_co_pi` partition, use only that one** — it is this group's entitlement; the plain `gpu_h100_*` / `gpu_b300_*` are other groups' and are not ours to run on, idle or not. Use a non-`co_pi` partition only where there is no `_co_pi` equivalent (a100, l40s, `gpu_ds`, `gpu_short`). Every GPU type, b300 included, is allowed through its `_co_pi` partition; do not exclude one on your own reasoning about CUDA or drivers unless a task actually failed for it.
 
 | Partition | GPU | Note |
 | --- | --- | --- |
-| `gpu_h100_64C_128T_2TB_co_pi` | h100:16 | our entitlement; prefer over any plain `gpu_h100_*` |
+| `gpu_h100_64C_128T_2TB_co_pi` | h100:16 | our entitlement; never the plain `gpu_h100_*` |
 | `gpu_h100_64C_128T_4TB_co_pi` | h100:8 | our entitlement |
-| `gpu_b300_96C_192T_3TB_co_pi` | b300:16 | our entitlement; prefer over any plain `gpu_b300_*` |
+| `gpu_b300_96C_192T_3TB_co_pi` | b300:16 | our entitlement; never the plain `gpu_b300_*` |
 | `gpu_a100_48C_96T_512GB` | a100:4 | no `_co_pi` equivalent — fine to use |
 | `gpu_l40s_64C_128T_1TB`, `gpu_ds` | l40s:4 | no `_co_pi` equivalent — fine to use |
 | `gpu_short` | l40s:4 | 1-day limit |
@@ -176,7 +173,7 @@ A tool needs two things here: its code in the synced `tools/` (automatic), and a
 ```
 
 ```bash
-... "squeue -h -j <jobid> -o '%i %T %R' | head; sacct -n -P -X -j <jobid> --format=JobID,State,ExitCode,Elapsed,MaxRSS"
+bash scripts/vib.sh exec 'squeue -h -j <jobid> -o "%i %T %R" | head; sacct -n -P -X -j <jobid> --format=JobID,State,ExitCode,Elapsed,MaxRSS'
 ```
 
 Queue waits on a busy cluster run minutes to hours, so **poll every 60–120 s**, or longer while `PENDING`. Each call makes a fresh ssh connection; don't hammer the login node.
@@ -192,7 +189,7 @@ Queue waits on a busy cluster run minutes to hours, so **poll every 60–120 s**
 ## 3. Collect
 
 ```bash
-... "cd $SAPIA_VIB_WORKSPACE && $SAPIA_VIB_ACTIVATE && sapia collect <tool> $SAPIA_VIB_WORKSPACE/outputs/<run> -t <table>"
+bash scripts/vib.sh exec 'sapia collect <tool> $SAPIA_VIB_WORKSPACE/outputs/<run> -t <table>'
 ```
 
 `-t` is **required** and must be the table from the `Output:` line; match any `-l/--dir-label` from the run. Allocate for this on a large table.
