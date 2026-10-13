@@ -34,6 +34,8 @@ bash scripts/vib.sh exec --on-node --cpus 4 --mem 16G --walltime 1:00:00 '<comma
 
 `--on-node` wraps the command in `srun -A <account> … bash -lc`, starts it in the workspace with the venv active, and drops the allocation's own `SLURM_*` variables so a `sapia run` inside it submits arrays with the resources you asked for, not the small allocation's. Compute nodes may run `sbatch` (the user confirmed). Anything heavier than 8 cpus: write the `srun` yourself (`bash -lc` is what makes `module` available; `-A` is required on `srun` and `salloc` exactly as on `sbatch`). The human equivalent for a long session is `salloc -c 8 -t 12:0:0`.
 
+**Give short `--on-node` calls (`new_run`, `--help`, a submit, a collect) `--timeout 240`.** The default is 1800 s to match the allocation, and an `--on-node` call that hangs holds an `srun` for that long; *measured:* one `new_run` hung past 300 s with no output and no run_dir, the identical call then took 4 s (cause unknown). After any hang check `squeue -u $USER -o "%i %P %T %R %j %M"` for an orphaned `sapia_node` job.
+
 **Use `--on-node` for `sapia run`, `sapia collect`, and anything that reads a table or a structure.** **Run directly on the login node only** cheap read-only scheduler queries — `squeue`, `sacct`, `sinfo`, `tail` of a log — i.e. the polling loop. Never run a tool's actual compute on the login node: no `boltz predict`, no `bash <tool>.sh` by hand outside `srun`/`sbatch`.
 
 ## The connection
@@ -111,13 +113,13 @@ sbatch: error: Please update your submission to include a valid slurm account (-
 
 **GPU jobs need `--partitions`.** The default partition `gp_64C_128T_512GB` has no GPUs (verified: `sinfo -o '%P %G'` shows `(null)`), so a GPU task submitted without `--partitions` never runs.
 
-**Prefer a `_co_pi` partition whenever one exists for the GPU you want** — those are this group's entitlement. Use a non-`co_pi` partition only where there is no `_co_pi` equivalent. Do not send work to a plain `gpu_h100_*` or `gpu_b300_*` just because `sinfo` lists it idle.
+**Where a GPU type has a `_co_pi` partition, use only that one** — it is this group's entitlement; the plain `gpu_h100_*` / `gpu_b300_*` are other groups' and are not ours to run on, idle or not. Use a non-`co_pi` partition only where there is no `_co_pi` equivalent (a100, l40s, `gpu_ds`, `gpu_short`). Every GPU type, b300 included, is allowed through its `_co_pi` partition; do not exclude one on your own reasoning about CUDA or drivers unless a task actually failed for it.
 
 | Partition | GPU | Note |
 | --- | --- | --- |
-| `gpu_h100_64C_128T_2TB_co_pi` | h100:16 | our entitlement; prefer over any plain `gpu_h100_*` |
+| `gpu_h100_64C_128T_2TB_co_pi` | h100:16 | our entitlement; never the plain `gpu_h100_*` |
 | `gpu_h100_64C_128T_4TB_co_pi` | h100:8 | our entitlement |
-| `gpu_b300_96C_192T_3TB_co_pi` | b300:16 | our entitlement; prefer over any plain `gpu_b300_*` |
+| `gpu_b300_96C_192T_3TB_co_pi` | b300:16 | our entitlement; never the plain `gpu_b300_*` |
 | `gpu_a100_48C_96T_512GB` | a100:4 | no `_co_pi` equivalent — fine to use |
 | `gpu_l40s_64C_128T_1TB`, `gpu_ds` | l40s:4 | no `_co_pi` equivalent — fine to use |
 | `gpu_short` | l40s:4 | 1-day limit |

@@ -218,9 +218,10 @@ Non-negotiables, each learned the hard way:
 - **Stay under half a partition's GPUs.** Each holds 4–16 in total across its nodes;
   `--max-gpu-fraction` defaults to `0.5` and caps concurrency accordingly. Leave it there
   unless the caller has a reason — the capacity is the lab's, not ours.
-- **Prefer a `_co_pi` partition** when one exists for that GPU; it is this group's
-  entitlement. Plain `gpu_h100_*` / `gpu_b300_*` belong to others even when idle. a100,
-  l40s, `gpu_ds` and `gpu_short` have no `_co_pi` form and are fine as they are.
+- **Where a GPU type has a `_co_pi` partition, only the `_co_pi` one may be used** — it is
+  this group's entitlement, and the plain `gpu_h100_*` / `gpu_b300_*` belong to other groups
+  even when idle. a100, l40s, `gpu_ds` and `gpu_short` have no `_co_pi` form and are fine
+  as they are. Any GPU type, b300 included, is allowed through its `_co_pi` partition.
 - **Every `sapia run` needs `-a $SAPIA_VIB_ACCOUNT`.** A default association is not enough:
   the job_submit plugin rejects the job with `! Missing slurm account`, and prosapia
   reports only `RuntimeError: sbatch exited 1` — the real reason is on stderr above the
@@ -301,7 +302,8 @@ cert). Note `SAPIA_EXECUTOR` is **not** set here: the Modal workstation exports
 | `SAPIA_VIB_ACCOUNT` | `anastassia_vorobieva` | SLURM account for `-a`. **Required** — the cluster rejects jobs without an explicit `-A`. |
 | `SAPIA_VIB_SHARED_ACTIVATION` | see `.env` | The lab's activation scripts for the built-in tools, read-only. The software they activate is installed on the cluster, not in this repo. |
 | `SAPIA_ACTIVATE_*` | absolute paths | Read by prosapia on the compute node. Inert under Modal. |
-| `CONDA_PREFIX`, `RFD3_CKPT` | see `.env` | Needed by the shared activation scripts; copied from the shared env's `.env`. |
+| `CONDA_PREFIX` | see `.env` | Needed by the shared activation scripts; copied from the shared env's `.env`. |
+| `RFD3_CKPT` | not in `.env` | Exported by the rfd3 activation script; `rfdiffusion3.sh` passes it as `ckpt_path` at task time. Never in `.env`: Modal tasks receive it too. |
 
 The weight Volumes were deliberately renamed **without** a `sapia-` prefix so teammates who
 don't use prosapia can share them. Note that prosapia's own defaults are still

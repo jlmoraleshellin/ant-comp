@@ -156,7 +156,7 @@ To move the prosapia pin: `uv lock --upgrade-package prosapia && uv sync`, test 
 
 - **Every job needs `-A`.** `sbatch`, `srun` and `salloc` are all rejected without it despite your default association, and prosapia surfaces this only as `sbatch exited 1`.
 - **Use `--partitions <name>:<gpu_count>`, never the bare name** — prosapia's GPU-count query cannot parse this cluster's `gpu:h100:4(S:0-1)` and dies with `ValueError: invalid literal for int()`.
-- **GPU jobs need `--partitions` at all**: the default partition has none. Prefer a `_co_pi` partition where one exists, and stay under half its GPUs (`--max-gpu-fraction` defaults to 0.5).
+- **GPU jobs need `--partitions` at all**: the default partition has none. Where a GPU type has a `_co_pi` partition, use only that one (the plain ones belong to other groups), and stay under half its GPUs (`--max-gpu-fraction` defaults to 0.5).
 - **Do real work in an allocation, not on the login node** — it is throttled, and a venv build there wedges partway through.
 - **`-g 0` for CPU-only tools**, or they request a GPU on a partition that has none and pend forever.
 - **Never add `--delete-excluded` to the sync** — `outputs/` and `.venv/` live inside the workspace and that flag deletes them outright.
