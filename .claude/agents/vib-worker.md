@@ -124,7 +124,7 @@ sbatch: error: Please update your submission to include a valid slurm account (-
 | `gpu_l40s_64C_128T_1TB`, `gpu_ds` | l40s:4 | no `_co_pi` equivalent — fine to use |
 | `gpu_short` | l40s:4 | 1-day limit |
 
-Re-check with `sinfo -o '%P %G'` and `sinfo -s` (the A/I/O/T column is current load) rather than trusting this table; the counts above are totals across all nodes in the partition, and concurrent tasks must not exceed 50% of them (the `--max-gpu-fraction` default handles this if the count you pass is right). **Do not pick a partition on your own for a large batch** — report the options and the load and let the caller choose. `--gpu-type` is Modal-only and ignored here.
+Re-check with `sinfo -o '%P %G'` and `sinfo -s` (the A/I/O/T column is current load) rather than trusting this table; the counts above are totals across all nodes in the partition, and concurrent tasks must not exceed 50% of them (the `--max-gpu-fraction` default handles this if the count you pass is right). **Do not pick a partition on your own for a large batch** — report the options and the load and let the caller choose. `--modal-gpu` is Modal-only and ignored here.
 
 **Always write `--partitions <name>:<gpu_count>`, never `--partitions <name>` alone.** *Measured:* the bare form crashes the submit —
 

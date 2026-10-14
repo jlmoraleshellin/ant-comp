@@ -101,7 +101,7 @@ main session = thinker                    (claude --agent thinker; Opus)
   verified invocations, collected columns and the specific traps of each tool. Loaded by
   the worker instead of re-reading the full docs. **They were written against
   Modal**: the tool flags, input/output columns and scientific traps hold everywhere, but
-  anything about Volumes, images, `modal-shell`, `--gpu-type` or `.exit` files does not
+  anything about Volumes, images, `modal-shell`, `--modal-gpu` or `.exit` files does not
   apply on vib.
 
 Start a campaign with `claude --agent thinker`.
@@ -214,7 +214,7 @@ Non-negotiables, each learned the hard way:
   task lands. Still never `cd` into a run_dir.
 - **GPU jobs need `--partitions`.** The default partition `gp_64C_128T_512GB` has no GPUs,
   so a GPU task submitted without one never runs. Check `sinfo -o '%P %G'` and `sinfo -s`;
-  don't pick a partition unilaterally for a large batch. `--gpu-type` is Modal-only.
+  don't pick a partition unilaterally for a large batch. `--modal-gpu` is Modal-only.
 - **Stay under half a partition's GPUs.** Each holds 4–16 in total across its nodes;
   `--max-gpu-fraction` defaults to `0.5` and caps concurrency accordingly. Leave it there
   unless the caller has a reason — the capacity is the lab's, not ours.
