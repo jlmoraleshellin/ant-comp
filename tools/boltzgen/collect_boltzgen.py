@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Collect BoltzGen nanobody designs into the (child) design table.
+Collect BoltzGen binder designs into the (child) design table.
 
 ``run_boltzgen.py`` points each target's ``--output`` at ``<out_dir>/runs/<name>/``,
 where BoltzGen writes (``README.md`` "Pipeline output", verified against the pinned
@@ -10,14 +10,31 @@ SHA):
         <id>.cif                     the inverse-folded design complex
         <id>.npz                     design_mask + source_context for that design
         refold_cif/<id>.cif          the REFOLDED complex (target + binder)
+        refold_design_cif/<id>.cif   the BINDER ALONE -- protein-anything ONLY
         aggregate_metrics_analyze.csv
 
 ``refold_cif/<id>.cif`` is what every analysis metric was computed on, so it is what
 ``boltzgen_path`` points at (converted to PDB; the mmCIF stays as
-``boltzgen_cif_path``). **There is no binder-alone structure.** The ``design_folding``
-step is disabled for nanobody binders and ``refold_design_cif/`` is never written
-(upstream issue #148). A self-consistency check therefore needs ``chainsel`` to cut
-the nanobody chain out first.
+``boltzgen_cif_path``).
+
+THE PROTOCOL IS A COLUMN, and it decides what several others mean
+------------------------------------------------------------------
+``boltzgen_protocol`` is read back from the group's own ``runs/<group>/.submit.json``
+-- written at submit, beside the designs it describes -- and **not** from a flag at
+collect time or from the run-level ``.meta.json``, which is merged across submits. A
+run_dir can hold nanobody and minibinder groups side by side; a run-level value would
+label both with whichever ran last. Read it before anything else. Three columns change
+meaning with it (``scaffold``/``scaffold_src``, ``cdr_sequence``, ``liability_*``) and
+two exist only under ``protein-anything`` (``binder_refold_cif``,
+``designfolding-*``).
+
+**The binder-alone structure exists only under ``protein-anything``.** Upstream runs
+``design_folding`` for ``protein-anything`` and ``protein-small_molecule`` only
+(``cli/boltzgen.py:1237``), and that step is what writes ``refold_design_cif/``
+(``task/predict/writer.py:94-104``). Under ``nanobody-anything`` it is never written
+(upstream issue #148) and a self-consistency check still needs ``chainsel`` to cut the
+nanobody chain out first; under ``protein-anything`` the answer is already in the
+table as ``boltzgen_designfolding-bb_rmsd_design``.
 
 There is also no ``final_ranked_designs/``: ``filtering`` cannot run without ESMFold2
 scores and cannot be configured out of needing them, so this tool never runs it.
@@ -105,7 +122,22 @@ from prosapia.utils import ensure_pdb
 RUNS_DIRNAME = "runs"
 DESIGN_DIRNAME = "intermediate_designs_inverse_folded"
 REFOLD_DIRNAME = "refold_cif"
+# The BINDER FOLDED ALONE, written only by the `design_folding` step -- which only
+# protein-anything runs (cli/boltzgen.py:1237). const.refold_design_cif_dirname;
+# task/predict/writer.py:94-104 writes it beside fold_out_design_npz/<id>.npz and
+# publishes the npz LAST, so an npz implies this cif. Absent under nanobody-anything
+# (upstream issue #148) and that is not a failure there.
+REFOLD_DESIGN_DIRNAME = "refold_design_cif"
 METRICS_CSV = "aggregate_metrics_analyze.csv"
+
+# The two protocols this tool's run module can submit, as recorded per group in
+# .submit.json. Read back into boltzgen_protocol -- a TRUST column.
+NANOBODY_PROTOCOL = "nanobody-anything"
+PROTEIN_PROTOCOL = "protein-anything"
+# Every protocol string this collector knows how to interpret. A record naming
+# anything else errors its designs rather than being read under the nearest-looking
+# protocol's rules -- see the fail-closed note in collect_boltzgen.
+KNOWN_PROTOCOLS = frozenset({NANOBODY_PROTOCOL, PROTEIN_PROTOCOL})
 
 # CSV key columns. Their absence is a hard error: without them nothing can be joined.
 ID_COL = "id"
@@ -133,9 +165,28 @@ DESIGN_BFACTOR_CUTOFF = 0.5
 # noncovalents_original = skip_inverse_folding, which is False here):
 #   * the all-atom RMSDs `rmsd`, `rmsd_design`, `rmsd_target` -- use the `bb_` ones;
 #   * `delta_sasa_original`, `design_sasa_*_original`;
-#   * `plip_hbonds`, `plip_saltbridge`, `plip_hydrophobic` -- use the `_refolded` ones.
-# `esmfold2_*` are absent for the same structural reason (that step never runs), and
-# `designfolding-*` because design_folding is disabled for nanobody binders.
+#   * `plip_hbonds`, `plip_saltbridge` -- use the `_refolded` ones.
+# `esmfold2_*` are absent for the same structural reason (that step never runs).
+#
+# THREE NAMES WERE REMOVED FROM THIS LIST ON 2026-10-09, after a real run showed them
+# missing from both shards' tables while this module printed "left NA" about them.
+# They are not missing because of a step set; upstream NEVER writes them:
+#   * `plip_hydrophobic_refolded` -- `count_noncovalents` (analyze_utils.py:183-225)
+#     returns exactly `plip_hbonds` and `plip_saltbridge`. There is no hydrophobic
+#     contact metric anywhere in BoltzGen. The name was invented here.
+#   * `target_id` -- added to the frame at `analyze.py:450`, which is AFTER
+#     `df.to_csv(aggregate_metrics_analyze.csv)` at `:421`. It reaches
+#     per_target_metrics_analyze.csv, never this one.
+#   * `free_cysteines` -- guarded by `self.free_cys` (`analyze.py:920`), whose
+#     constructor default is False (`:124`) and which NO protocol config and NO key in
+#     analysis.yaml ever sets. It is unreachable through this tool. (`filter_cysteine`
+#     in the nanobody/peptide filtering config is a different thing and `filtering`
+#     never runs here.)
+# Declaring a column upstream cannot produce is not conservative, it is wrong. Since
+# 2026-10-09 a declared-but-absent name is written as pd.NA rather than dropped, so it
+# no longer breaks a filter -- but it now produces a permanently all-NA column that
+# looks exactly like a metric that was not measured. Every name in this tuple and in
+# PROTEIN_PROTOCOL_METRICS is a claim that upstream writes it; see _metric_data.
 CORE_METRICS = (
     # --- confidence, from the Boltz-2 refold (eval_keys_confidence) -------------
     "design_ptm",
@@ -168,14 +219,17 @@ CORE_METRICS = (
     "design_sasa_unbound_refolded",
     "plip_hbonds_refolded",
     "plip_saltbridge_refolded",
-    "plip_hydrophobic_refolded",
     # --- sequence-level developability -----------------------------------------
+    # liability_* uses the modality the PROTOCOL selects, and the two are not
+    # comparable. nanobody-anything -> `antibody` rules (cli/boltzgen.py:99-105).
+    # protein-anything -> the base default `peptide` (analysis.yaml), which on a
+    # folded 80-225 aa protein is close to a lysine+arginine count. Read
+    # boltzgen_protocol before comparing these across rows.
     "design_hydrophobicity",
     "design_chain_hydrophobicity",
     "liability_score",
     "liability_num_violations",
     "liability_details",
-    "free_cysteines",
     # --- composition / provenance ----------------------------------------------
     "num_design",
     "num_tokens",
@@ -183,7 +237,36 @@ CORE_METRICS = (
     "helix",
     "sheet",
     "loop",
-    "target_id",
+)
+
+# Collected ONLY under protein-anything, because only that protocol computes them.
+#
+# `designfolding-*` come from the `design_folding` step: the designed chain is folded
+# ALONE, without the target, and compared back to the designed backbone
+# (analyze.py:971-1039). `allatom_fold_metrics` is False here, so only the `bb_`
+# family exists; `get_fold_metrics` does NOT prefix its confidence block
+# (analyze_utils.py:178-180), which is why `designfolding-design_ptm` has no `bb_`.
+#
+# **The hyphen is upstream's, not a typo.** `analyze.py:1037-1039` builds the key as
+# f"designfolding-{k}". Collected under that spelling so the column matches the raw
+# CSV and --all-metrics does not produce a second name for the same number. A --filter
+# addresses it as df["boltzgen_designfolding-bb_rmsd_design"]; it cannot be used in a
+# df.query() string.
+#
+# `design_largest_hydrophobic_patch_refolded` is computed because
+# `largest_hydrophobic_refolded` is true in analysis.yaml and protein-anything's
+# protocol config is `{}`, so nothing turns it off. nanobody-anything DOES turn it off
+# (cli/boltzgen.py:99-105), which is why it is not in CORE_METRICS.
+PROTEIN_PROTOCOL_METRICS = (
+    # Binder self-consistency: designed backbone vs the SAME SEQUENCE folded alone.
+    # This is the number that nanobody-anything needs chainsel + usalign to get.
+    "designfolding-bb_rmsd_design",
+    "designfolding-bb_rmsd",
+    # Confidence of the binder folded alone (a monomer prediction).
+    "designfolding-design_ptm",
+    "designfolding-complex_plddt",
+    # Surface hydrophobicity of the refolded binder, A^2.
+    "design_largest_hydrophobic_patch_refolded",
 )
 
 # Upstream writes threshold booleans whose names contain '<' and '>'
@@ -255,6 +338,16 @@ SCAFFOLD_DISTINCT = "distinct_from_target"  # no allow-list (--spec), but not a 
 SCAFFOLD_NOT_IN_RUN = "not_in_run_scaffold_list"  # -> NA
 SCAFFOLD_IS_TARGET = "is_a_target_chain_source"  # -> NA
 SCAFFOLD_NONE = "no_source_context"  # -> NA
+# protein-anything: there IS no framework, so there is nothing to validate. Its own
+# verdict, NOT SCAFFOLD_DISTINCT.
+#
+# Without it this column lies by accident. A de-novo binder entity gets a
+# source_context entry whose `source` is the literal string "inline"
+# (schema.py:1607 -> source_context.from_structure, default source="inline"), with no
+# scaffold allow-list recorded, so the existing path would return
+# ("inline", distinct_from_target) -- a scaffold NAME and a verdict that reads as
+# "checked and fine" for a protocol that has no scaffolds at all.
+SCAFFOLD_NOT_APPLICABLE = "not_applicable_no_scaffold"  # -> NA
 
 
 class BoltzGenCollectArgs(CollectArgs):
@@ -397,9 +490,10 @@ def binder_chain_index(chains: list[ChainView]) -> int:
     """The index of the single chain carrying designed residues.
 
     Zero designed chains means the design mask never reached the written B-factors;
-    more than one means the spec designed something other than a lone nanobody. Both
+    more than one means the spec designed something other than a lone binder. Both
     are errors: the sequence columns and the scaffold would otherwise be attached to a
-    chain nobody verified.
+    chain nobody verified. Protocol-independent -- nanobody-anything and
+    protein-anything both design exactly one chain.
     """
     designed = [i for i, c in enumerate(chains) if any(c.designed)]
     if len(designed) == 1:
@@ -408,7 +502,7 @@ def binder_chain_index(chains: list[ChainView]) -> int:
         f"expected exactly one designed chain in the design mmCIF, found "
         f"{len(designed)} ({[chains[i].label for i in designed]} of "
         f"{[c.label for c in chains]}); the design-mask B-factor cannot identify the "
-        f"nanobody chain"
+        f"binder chain"
     )
 
 
@@ -449,6 +543,8 @@ def scaffold_of(
     index: int,
     label: str,
     allowed_stems: frozenset[str] | None,
+    *,
+    has_scaffolds: bool = True,
 ) -> tuple[Any, str, str]:
     """``(scaffold basename or NA, chain_map verdict, scaffold_src verdict)``.
 
@@ -477,6 +573,12 @@ def scaffold_of(
 
     Either check failing yields ``pd.NA`` and a verdict that names the failure --
     never a scaffold name, and never a verdict that reads as success.
+
+    ``has_scaffolds=False`` (``protein-anything``) short-circuits the whole thing:
+    the protocol has no framework, so there is no name to publish and no check to
+    report the result of. The ``chain_map`` verdict is still computed, because it is
+    about the chain LINK and holds for a de-novo entity exactly as for a scaffold one
+    (``update_designed`` writes ``output_chain`` for every chain).
     """
     chains = (context or {}).get("chains")
     if not isinstance(chains, list) or index >= len(chains):
@@ -501,6 +603,12 @@ def scaffold_of(
         chain_map = CHAIN_MAP_CONFIRMED
     else:
         chain_map = CHAIN_MAP_RENAMED
+
+    if not has_scaffolds:
+        # protein-anything. `source` here is "inline" -- the de-novo entity's
+        # placeholder, not a file. Publishing it as boltzgen_scaffold would put a
+        # scaffold name on a design that has no framework.
+        return pd.NA, chain_map, SCAFFOLD_NOT_APPLICABLE
 
     others = {
         str(c["source"])
@@ -527,8 +635,10 @@ def map_binder(
     csv_seq: str,
     csv_num_design: Any,
     allowed_stems: frozenset[str] | None,
+    *,
+    has_scaffolds: bool = True,
 ) -> BinderMapping:
-    """Identify the nanobody chain and everything read off it, or raise MappingError.
+    """Identify the binder chain and everything read off it, or raise MappingError.
 
     Order matters: the chain is found from the design mask, all three independent
     witnesses of the designed-residue count are checked against it, the design chain is
@@ -541,8 +651,8 @@ def map_binder(
     if ":" in csv_seq:
         raise MappingError(
             f"'{CHAIN_SEQ_COL}' holds {csv_seq.count(':') + 1} designed chains; this "
-            f"tool's premise is a single designed nanobody chain, so there is no "
-            f"unambiguous binder sequence"
+            f"tool's premise is a SINGLE designed binder chain under either protocol, "
+            f"so there is no unambiguous binder sequence"
         )
 
     design_chains = read_chains(design_cif, design_mask=True)
@@ -607,7 +717,11 @@ def map_binder(
         )
 
     scaffold, chain_map, scaffold_src = scaffold_of(
-        npz_source_context(npz_path), index, binder.label, allowed_stems
+        npz_source_context(npz_path),
+        index,
+        binder.label,
+        allowed_stems,
+        has_scaffolds=has_scaffolds,
     )
     return BinderMapping(
         chain=refold_binder.label,
@@ -726,13 +840,100 @@ def _cell(row: pd.Series, col: str) -> Any:
         return value
 
 
-def _metric_data(row: pd.Series, columns: list[str]) -> dict[str, Any]:
-    """The declared metric columns, with an absent one left out entirely.
+# EVERY non-metric column this tool documents, in table order. Seeded to pd.NA on
+# EVERY row before anything else is written, so the column exists whatever happened to
+# that design.
+#
+# WHY (added 2026-10-09, closing the hole the pd.NA metric change left open). The
+# metric fill covered only the declared METRIC names. The trust and attestation
+# columns were still written on their success paths only -- `chain_map` inside the
+# post-mapping `data.update(...)`, the `binding_*` family inside `if epitope or
+# anti_epitope`. So a collect in which EVERY design errors produced a table with no
+# `boltzgen_chain_map` column at all, and the mandatory trust filter this tool's skill
+# tells you to run FIRST raised KeyError.
+#
+# That is not a rare shape. The single most common cause of an all-error collect is a
+# `-l/--dir-label` or `-t/--table` resolving to a different out_dir than the run used
+# -- which this module's own error message names as the first thing to check. So the
+# failure landed precisely on the run the filter was most needed for.
+#
+# Seeded UNCONDITIONALLY, including the protocol-specific `binder_refold_cif`, so the
+# guarantee needs no qualifier: every structural, trust and attestation column exists
+# on every row of every table this tool writes. (Metric columns are a separate,
+# protocol-dependent set -- see `declared` in collect_boltzgen -- and are NA-filled
+# against whichever set applies to that row's protocol.)
+ROW_KEYS = (
+    "id",
+    "protocol",
+    "chain_map",
+    "scaffold_src",
+    "mapping_seq_identity",
+    "binding_resnames",
+    "not_binding_resnames",
+    "binding_frame",
+    "binding_chain_frame",
+    "chain_id_map",
+    "cif_path",
+    "binder_refold_cif",
+    "binder_chain",
+    "sequence",
+    "cdr_sequence",
+    "scaffold",
+    "design_resnums",
+    "fixed_resnums",
+    "n_design_res",
+    "binder_len",
+)
 
-    A column this tool declares but the CSV does not carry is NOT written as 0 --
-    prosapia leaves it NA, which is what "not measured" means here.
+
+def _metric_data(
+    row: pd.Series, columns: list[str], absent: list[str]
+) -> dict[str, Any]:
+    """The declared metric columns, with an absent one written as ``pd.NA``.
+
+    WHY pd.NA AND NOT A DROPPED KEY -- changed 2026-10-09
+    -----------------------------------------------------
+    It used to be ``{col: row[col] for col in columns if col in row.index}``, with
+    ``columns`` already filtered to what the CSV carried. So a declared-but-absent
+    name never reached ``Collected.data``, ``prosapia`` never minted the column, and
+    the table's shape was a function of **what one CSV happened to contain** rather
+    than of the tool version. Measured on the Volume: ``table0_a100s1.tsv`` and
+    ``table0_h100.tsv`` of ``20261009_071201_boltzgen_pilot_1tnf_d143`` have 57
+    columns each and carry no ``boltzgen_free_cysteines``,
+    ``boltzgen_plip_hydrophobic_refolded`` or ``boltzgen_target_id`` under any
+    spelling -- while this module printed "left NA" about all three.
+
+    The consequence was not cosmetic: a ``-f`` filter naming such a column raised
+    ``KeyError`` instead of filtering, which is worst exactly on the run whose metrics
+    went missing. A filter has to be writable against the tool's documented column
+    set, so that set must exist in every table the tool writes.
+
+    ``pd.NA`` is also the honest value: it means "not measured", which is what
+    happened. **NA is never 0.**
+
+    THE SHARP EDGE THIS INTRODUCES, and what replaces the lost signal
+    -----------------------------------------------------------------
+    The ``KeyError`` was loud. An all-NA column is not: at a glance it is
+    indistinguishable from a metric that was genuinely not produced. And five of the
+    ``PROTEIN_PROTOCOL_METRICS`` names are read off ``analyze.py`` and have **never
+    been observed in a real CSV**, so a misspelling would now present as a plausible
+    all-NA column instead of an error.
+
+    So the printed line in ``collect_boltzgen`` is now the only detector, and it
+    **names every absent column** rather than counting them. Do not reduce it to a
+    count. An entirely-NA column has two causes -- the metric was not produced, or
+    the declared name here is wrong -- and only a ``--all-metrics`` collect, which
+    takes the CSV's own column names, tells them apart.
     """
-    return {col: row[col] for col in columns if col in row.index}
+    # Seed FIRST, so a later real value overwrites the NA rather than the reverse.
+    data: dict[str, Any] = {key: pd.NA for key in ROW_KEYS}
+    data.update({col: row[col] for col in columns if col in row.index})
+    # Declared and missing -> NA, so the column EXISTS and a filter naming it does
+    # not raise. Written per row rather than once, because prosapia mints a column
+    # from the keys of each row's Collected.data.
+    for col in absent:
+        data[col] = pd.NA
+    return data
 
 
 def collect_boltzgen(ctx: CollectCtx[BoltzGenCollectArgs]) -> CollectEach:
@@ -852,24 +1053,106 @@ def collect_boltzgen(ctx: CollectCtx[BoltzGenCollectArgs]) -> CollectEach:
             )
             return
 
+        record, record_error = group_record(d.name)
+
+        # WHICH PROTOCOL THESE DESIGNS ARE, read from the group's own .submit.json --
+        # which sits beside the designs it describes -- and NOT from a flag or from
+        # .meta.json. A run_dir can hold nanobody and minibinder groups side by side,
+        # and .meta.json is merged across submits, so a run-level value would label
+        # both with whichever ran last. That is the exact failure this column exists
+        # to prevent.
+        #
+        # Taken from the raw record even when `record_error` is set. The error says the
+        # EPITOPE attestation does not describe these designs; the protocol is a
+        # separate, run-level fact and withholding it would leave an error row unable
+        # to say what class of binder it even was.
+        #
+        # NA when the record is missing/unreadable (an error row anyway), or when it
+        # predates this column -- the 2026-10-08/09 pilot runs. NA is the absence of a
+        # record, never a protocol.
+        protocol = (record or {}).get("protocol") or None
+        if protocol is None and record:
+            print(
+                f"{d.name}: {SUBMIT_RECORD} records no 'protocol'; it was written "
+                f"before boltzgen_protocol existed. The column is NA for this group "
+                f"-- it is NOT a claim that the protocol was nanobody-anything."
+            )
+        elif protocol is not None and protocol not in KNOWN_PROTOCOLS:
+            # A protocol string this collector does not understand means its branches
+            # -- the scaffold question, the designfolding columns, the cdr_sequence
+            # suppression -- were written for a different experiment. Carried into the
+            # table verbatim (the table should say what the record says) but every
+            # design of the group ERRORS: there is no safe default reading.
+            record_error = record_error or (
+                f"{SUBMIT_RECORD} records protocol {protocol!r}, which this collector "
+                f"does not know. Its scaffold, sequence and designfolding columns are "
+                f"written per protocol and none of them can be interpreted for this "
+                f"one. Collected as errors rather than under the nearest-looking "
+                f"protocol's rules."
+            )
+            print(f"{d.name}: {record_error}")
+
+        # FAIL CLOSED. `protocol == NANOBODY`, never `protocol != PROTEIN`.
+        #
+        # The inverted form treated an ABSENT or UNRECOGNISED protocol as nanobody,
+        # and nanobody is the branch that PUBLISHES A PROVENANCE VERDICT. A de-novo
+        # design landing there gets scaffold "inline" with scaffold_src
+        # `distinct_from_target` -- a verdict that reads as *checked and passed* -- on
+        # a protocol that has no scaffolds at all. The safe reading of "I cannot tell
+        # which protocol this was" is MAKE NO SCAFFOLD CLAIM, never "assume nanobody":
+        # a withheld name costs a diversity analysis, a wrong one corrupts it.
+        #
+        # So only an explicit, recognised nanobody record enables the scaffold check.
+        # Everything else -- protein-anything, an absent protocol (a pre-2026-10-09
+        # record), an unknown string, a missing record -- reports
+        # `not_applicable_no_scaffold` and NA.
+        has_scaffolds = protocol == NANOBODY_PROTOCOL
+        if protocol is None:
+            print(
+                f"{d.name}: no protocol recorded, so the scaffold check is NOT run "
+                f"(scaffold NA, scaffold_src '{SCAFFOLD_NOT_APPLICABLE}'). This is "
+                f"fail-closed: assuming nanobody would publish a provenance verdict "
+                f"nothing attests."
+            )
+
+        # Columns depend on the protocol: only protein-anything runs design_folding and
+        # the largest-hydrophobic-patch metric, so only it can produce those columns.
+        declared = (
+            (*CORE_METRICS, *PROTEIN_PROTOCOL_METRICS, *extra_metrics)
+            if protocol == PROTEIN_PROTOCOL
+            else (*CORE_METRICS, *extra_metrics)
+        )
         if ctx.args.all_metrics:
+            # --all-metrics takes the CSV's OWN column names, so nothing can be
+            # "declared but absent" and there is nothing to fill with NA. This is also
+            # the diagnostic for an all-NA column below: it shows what is really there.
             columns = [
                 c
                 for c in df.columns
                 if c not in (ID_COL, FILE_COL, CHAIN_SEQ_COL) and _SAFE_COLUMN.match(c)
             ]
+            absent: list[str] = []
         else:
-            columns = [c for c in (*CORE_METRICS, *extra_metrics) if c in df.columns]
-            absent = [
-                c
-                for c in (*CORE_METRICS, *extra_metrics)
-                if c not in df.columns and c not in warned_absent
-            ]
-            if absent:
-                warned_absent.update(absent)
-                print(f"  not in this CSV (left NA): {', '.join(sorted(absent))}")
+            columns = [c for c in declared if c in df.columns]
+            # NOT filtered by warned_absent: every absent name must be written as NA on
+            # every row of every group, or the column's presence would depend on which
+            # group happened to be collected first. Only the PRINTING is deduped.
+            absent = [c for c in declared if c not in df.columns]
+            unwarned = [c for c in absent if c not in warned_absent]
+            if unwarned:
+                warned_absent.update(unwarned)
+                # This line is the ONLY remaining detector for a misspelled declared
+                # name -- since 2026-10-09 these columns are written as NA rather than
+                # dropped, so they no longer raise KeyError in a filter. It names every
+                # column deliberately; do not reduce it to a count.
+                print(
+                    f"  not in this CSV, so written as NA (the column EXISTS and a -f "
+                    f"filter naming it will not raise; an ALL-NA column means either "
+                    f"the metric was not produced OR the name declared here is wrong "
+                    f"-- re-collect with --all-metrics to see the CSV's real names): "
+                    f"{', '.join(sorted(unwarned))}"
+                )
 
-        record, record_error = group_record(d.name)
         # The absence of the trust record must not be readable as the absence of the
         # thing it attests. boltzgen_binding_resnames is NA when no steering was asked
         # for -- so a group whose record is missing, stale or at odds with its own spec
@@ -894,15 +1177,21 @@ def collect_boltzgen(ctx: CollectCtx[BoltzGenCollectArgs]) -> CollectEach:
             if group_scaffolds
             else None
         )
-        print(
-            f"{d.name}: scaffold allow-list "
-            + (
-                f"({len(allowed_stems)}) {', '.join(sorted(allowed_stems))}"
-                if allowed_stems
-                else f"NONE recorded -- scaffold_src can only reach "
-                f"'{SCAFFOLD_DISTINCT}', not '{SCAFFOLD_VERIFIED}'"
+        if not has_scaffolds:
+            print(
+                f"{d.name}: protocol {protocol} has no framework; boltzgen_scaffold "
+                f"is NA and scaffold_src is '{SCAFFOLD_NOT_APPLICABLE}' for every row"
             )
-        )
+        else:
+            print(
+                f"{d.name}: scaffold allow-list "
+                + (
+                    f"({len(allowed_stems)}) {', '.join(sorted(allowed_stems))}"
+                    if allowed_stems
+                    else f"NONE recorded -- scaffold_src can only reach "
+                    f"'{SCAFFOLD_DISTINCT}', not '{SCAFFOLD_VERIFIED}'"
+                )
+            )
 
         # A duplicated `id` would collapse two designs into one row, last-wins, with
         # nothing to show it happened: the by-name join (file_name == id + '.cif') is
@@ -923,8 +1212,11 @@ def collect_boltzgen(ctx: CollectCtx[BoltzGenCollectArgs]) -> CollectEach:
             row_name = (
                 design_id if design_id.startswith(d.name) else f"{d.name}_{design_id}"
             )
-            data: dict[str, Any] = _metric_data(row, columns)
+            data: dict[str, Any] = _metric_data(row, columns, absent)
             data["id"] = design_id
+            # On EVERY row, including every error row. A row that cannot say what
+            # class of binder it is is the problem this column was added to solve.
+            data["protocol"] = protocol if protocol else pd.NA
             if epitope:
                 data["binding_resnames"] = epitope
             # A SEPARATE column: not_binding is the opposite claim in identical
@@ -977,9 +1269,24 @@ def collect_boltzgen(ctx: CollectCtx[BoltzGenCollectArgs]) -> CollectEach:
             design_cif = design_dir / file_name
             npz_path = design_dir / f"{design_id}.npz"
             refold_cif = design_dir / REFOLD_DIRNAME / f"{design_id}.cif"
+            # The BINDER ALONE. Only protein-anything writes it (the design_folding
+            # step), so it is required only there. Required rather than optional:
+            # writer.py publishes the npz LAST, and analysis would have dropped the
+            # design entirely without the npz (analyze.py:972-977), so a row in the
+            # CSV means the cif should exist. Its absence is an anomaly, not a
+            # protocol difference, and an anomaly is an error row.
+            binder_refold_cif = (
+                design_dir / REFOLD_DESIGN_DIRNAME / f"{design_id}.cif"
+            )
+            required = [design_cif, npz_path, refold_cif]
+            if protocol == PROTEIN_PROTOCOL:
+                required.append(binder_refold_cif)
 
+            # The names are reported RELATIVE TO design_dir, not as bare basenames:
+            # <id>.cif, refold_cif/<id>.cif and refold_design_cif/<id>.cif all share
+            # a basename, so "missing ['d1.cif']" would not say which one.
             missing = [
-                p.name for p in (design_cif, npz_path, refold_cif) if not p.is_file()
+                str(p.relative_to(design_dir)) for p in required if not p.is_file()
             ]
             if missing:
                 print(f"{d.name}: {design_id} missing {missing}")
@@ -998,6 +1305,13 @@ def collect_boltzgen(ctx: CollectCtx[BoltzGenCollectArgs]) -> CollectEach:
                 continue
 
             data["cif_path"] = str(refold_cif)
+            if protocol == PROTEIN_PROTOCOL:
+                # The one real new capability of protein-anything: a binder-alone
+                # structure, so self-consistency does not need a chainsel + fold
+                # round-trip. Left as mmCIF (usalign reads it); the complex is
+                # converted to PDB because boltzgen_path is the column downstream
+                # tools default to.
+                data["binder_refold_cif"] = str(binder_refold_cif)
             try:
                 refold_pdb = ensure_pdb(refold_cif, run_dir)
             except Exception as e:  # noqa: BLE001 -- see the comment on map_binder below
@@ -1020,6 +1334,7 @@ def collect_boltzgen(ctx: CollectCtx[BoltzGenCollectArgs]) -> CollectEach:
                     str(row[CHAIN_SEQ_COL]),
                     _cell(row, NUM_DESIGN_COL),
                     allowed_stems,
+                    has_scaffolds=has_scaffolds,
                 )
             except Exception as e:  # noqa: BLE001
                 # Deliberately broad. A corrupt input file is an ERROR ROW, never an
@@ -1054,6 +1369,77 @@ def collect_boltzgen(ctx: CollectCtx[BoltzGenCollectArgs]) -> CollectEach:
                 for i in range(1, mapping.binder_len + 1)
                 if i not in set(mapping.design_positions)
             ]
+
+            # THE FOURTH WITNESS, and it is free -- but only under protein-anything.
+            #
+            # That protocol designs the WHOLE chain (the spec's `protein:` entity is
+            # all designed residues, schema.py:528-556 marks every one), so the
+            # designed-residue count and the chain length are two independent
+            # measurements of the same object: one from the design mask, one from the
+            # refolded chain's residues. They must be equal.
+            #
+            # An inequality means the mask and the chain do not describe the same
+            # thing, which displaces EVERY residue-indexed column (design_resnums,
+            # fixed_resnums) and makes binder_len a length for some other chain. The
+            # three existing witnesses all count designed residues, so they agree with
+            # each other and miss this entirely. An error row, never a warning: a
+            # count mismatch is an error.
+            if (
+                protocol == PROTEIN_PROTOCOL
+                and len(mapping.design_positions) != mapping.binder_len
+            ):
+                msg = (
+                    f"under {PROTEIN_PROTOCOL} the whole binder chain is designed, so "
+                    f"the designed-residue count must equal the chain length -- but "
+                    f"{len(mapping.design_positions)} residues are masked as designed "
+                    f"in a chain of {mapping.binder_len}. The design mask and the "
+                    f"chain do not describe the same object, so every residue-indexed "
+                    f"column would be displaced"
+                )
+                print(f"{d.name}: {design_id} {msg}")
+                # CARRY WHAT WAS GENUINELY MEASURED, exactly as MappingError.data does
+                # for the failures raised inside map_binder. `map_binder` ran to
+                # completion here -- this witness fires AFTER it -- so three results
+                # exist and discarding them would make the one row that needs
+                # diagnosing the least diagnosable row in the table. The first
+                # question anyone asks of this error is "was the chain mapping sound
+                # and only the count wrong, or was the whole mapping adrift?", and
+                # mapping_seq_identity is the column that answers it.
+                #
+                #   * chain_map / mapping_seq_identity -- both concern the chain LINK
+                #     and the CSV-vs-structure sequence identity, neither of which is
+                #     a count. They were established before this check and are
+                #     unaffected by it.
+                #   * scaffold_src -- published because under THIS protocol it is not
+                #     a positional lookup at all: scaffold_of short-circuits to
+                #     `not_applicable_no_scaffold` before it ever indexes
+                #     source_context["chains"] (there is no framework to validate), so
+                #     it is a statement about the protocol, not about this design's
+                #     chain index. `scaffold` is NA beside it, as always here.
+                #
+                # Everything residue-indexed or count-derived stays NA: binder_chain,
+                # sequence, cdr_sequence, design_resnums, fixed_resnums, n_design_res,
+                # binder_len. Those are precisely what the error is about, and naming
+                # a chain or a residue on a row whose mapping is in doubt is the thing
+                # this collector refuses to do anywhere else.
+                data.update(
+                    {
+                        "chain_map": mapping.chain_map,
+                        "mapping_seq_identity": mapping.seq_identity,
+                        "scaffold_src": mapping.scaffold_src,
+                        "scaffold": mapping.scaffold,
+                    }
+                )
+                yield Collected(
+                    name=row_name,
+                    parent=d.name,
+                    path="",
+                    status=f"error: MappingError: {msg}",
+                    data=data,
+                )
+                n += 1
+                continue
+
             data.update(
                 {
                     # Always one of CHAIN_MAP_OK here: every other verdict either
@@ -1064,8 +1450,28 @@ def collect_boltzgen(ctx: CollectCtx[BoltzGenCollectArgs]) -> CollectEach:
                     "mapping_seq_identity": mapping.seq_identity,
                     "binder_chain": mapping.chain,
                     "sequence": mapping.sequence,
-                    "cdr_sequence": _cell(row, DESIGN_SEQ_COL),
+                    # NANOBODY-ONLY BY MEANING, written as NA elsewhere rather than
+                    # omitted, so the column exists under both protocols and a -f
+                    # filter naming it cannot raise KeyError.
+                    #
+                    # Under protein-anything the whole chain is designed, so upstream's
+                    # `designed_sequence` equals `designed_chain_sequence` and putting
+                    # it in a column called cdr_sequence would assert a CDR/framework
+                    # split that does not exist. boltzgen_sequence already carries it.
+                    "cdr_sequence": (
+                        pd.NA
+                        if protocol == PROTEIN_PROTOCOL
+                        else _cell(row, DESIGN_SEQ_COL)
+                    ),
+                    # NA under protein-anything via scaffold_of's has_scaffolds branch;
+                    # scaffold_src says `not_applicable_no_scaffold` beside it.
                     "scaffold": mapping.scaffold,
+                    # Honest under BOTH protocols, but they mean different things.
+                    # nanobody: the CDRs, and fixed_resnums is the framework that
+                    # `proteinmpnn --fixed-positions` consumes. protein-anything: the
+                    # whole chain is designed, so design_resnums is `1:binder_len` and
+                    # fixed_resnums is EMPTY -- which is correct, not a bug, and means
+                    # there is nothing to hand proteinmpnn.
                     "design_resnums": render_positions(mapping.design_positions),
                     "fixed_resnums": render_positions(fixed),
                     "n_design_res": len(mapping.design_positions),
@@ -1079,12 +1485,31 @@ def collect_boltzgen(ctx: CollectCtx[BoltzGenCollectArgs]) -> CollectEach:
                 name=row_name, parent=d.name, path=refold_pdb, data=data
             )
             n += 1
-        print(f"{d.name}: OK ({n} design(s))")
+        if n == 0:
+            # A header-only aggregate_metrics_analyze.csv is NOT a successful collect
+            # of nothing, and must not print the word OK. It is the DOCUMENTED
+            # signature of a protein-anything run whose design_folding step did not
+            # happen: analysis is launched with designfolding_metrics=true from the
+            # PROTOCOL (cli/boltzgen.py:1237,1310) while --steps only filters the step
+            # list, so analyze.py:972-977 returns None for every design and writes a
+            # CSV with columns and no rows -- after the whole GPU spend, with no
+            # traceback anywhere.
+            print(
+                f"{d.name}: NO DESIGNS -- {METRICS_CSV} exists but has zero rows. "
+                f"This is not an empty success. Under {PROTEIN_PROTOCOL} it is the "
+                f"signature of a run whose design_folding step did not produce "
+                f"fold_out_design_npz/: analysis then skips every design and writes a "
+                f"header-only CSV. Check the task .out for repeated 'Folded path does "
+                f"not exist. Skipping', and check that the submit's step list included "
+                f"design_folding."
+            )
+        else:
+            print(f"{d.name}: OK ({n} design(s))")
         named = sum(
             c for v, c in scaffold_verdicts.items()
             if v in (SCAFFOLD_VERIFIED, SCAFFOLD_DISTINCT)
         )
-        if scaffold_verdicts and not named:
+        if scaffold_verdicts and not named and has_scaffolds:
             # Every scaffold NA is almost never a BoltzGen problem. The binder's index
             # is its position among POLYMER chains, and it indexes source_context's
             # chain list; a target carrying a ligand, glycan or ion chain can make the

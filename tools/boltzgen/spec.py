@@ -9,9 +9,12 @@ TOOL = Tool(
     name="boltzgen",
     action="create",
     description=(
-        "Design nanobody (VHH) binders against a protein target with BoltzGen's "
-        "nanobody-anything protocol: new CDRs on a fixed, randomly drawn VHH "
-        "framework. One BoltzGen run per target; the designs are the child rows."
+        "Design binders against a protein target with BoltzGen. --protocol "
+        "nanobody-anything (default) grafts new CDRs onto a fixed, randomly drawn "
+        "VHH framework; --protocol protein-anything designs a de-novo minibinder "
+        "chain of a length you choose (--binder-length). One BoltzGen run per "
+        "target; the designs are the child rows, and every row records which "
+        "protocol made it in boltzgen_protocol."
     ),
     default_script=str(Path(__file__).parent / "boltzgen.sh"),
     # The target a run designs against is a structure, so the default is the generic

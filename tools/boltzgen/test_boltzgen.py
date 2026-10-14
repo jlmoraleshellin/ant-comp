@@ -33,6 +33,64 @@ WHAT THESE CHECKS PROVE
     still completes, and every error row has an empty path and an empty ``cif_path``
     when the file is absent.
 
+WHAT THE 2026-10-09 WIDENING ADDED, and what those checks prove
+  * **the nanobody path is unchanged.** The default protocol is still
+    ``nanobody-anything``, its step list is still exactly
+    ``design inverse_folding folding analysis``, its spec still carries a scaffold
+    ``file:`` entity with a LIST path and the default five, and its target entity is
+    byte-identical to the one ``protein-anything`` writes for the same inputs;
+  * ``--binder-length`` **translates** ``MIN-MAX`` to BoltzGen's ``MIN..MAX`` and
+    refuses everything else. This is arithmetic the tests CAN prove: BoltzGen's
+    tokeniser would read the literal ``'80-225'`` as two design blocks summing to
+    **305** residues, and the suite asserts that sum explicitly;
+  * a flag meaningless under the chosen protocol is REFUSED, in both directions, and
+    the refusal names every offending flag rather than the first;
+  * ``boltzgen_protocol`` comes from the group's ``.submit.json`` and differs between
+    two groups collected in the same out_dir, and a record predating the column is
+    ``NA`` rather than silently "nanobody";
+  * under ``protein-anything`` the scaffold columns are ``NA`` +
+    ``not_applicable_no_scaffold`` -- NOT the ``("inline", distinct_from_target)``
+    the unmodified code would have produced -- ``cdr_sequence`` is ``NA`` while the
+    COLUMN still exists, and ``fixed_resnums`` is empty because the whole chain is
+    designed;
+  * the binder-alone ``refold_design_cif/<id>.cif`` is collected for
+    ``protein-anything`` only, and its absence is an error row naming the relative
+    path (all three artifacts share a basename);
+  * **a declared-but-absent metric is now ``pd.NA``, and the COLUMN EXISTS** -- every
+    ``CORE_METRICS`` name is a key on every row of either protocol, the
+    ``PROTEIN_PROTOCOL_METRICS`` names are keys on protein-anything rows and on no
+    nanobody row, a measured value is not overwritten by NA, nothing absent is filled
+    with ``0``, and a filter naming an absent column no longer raises. The printed
+    detector that replaces the lost ``KeyError`` is asserted too: it must NAME the
+    absent columns, say the column exists, give BOTH causes of an all-NA column, and
+    point at ``--all-metrics``.
+
+WHAT THE WIDENING'S CHECKS CANNOT PROVE -- unknown until a real protein-anything run
+  * that ``aggregate_metrics_analyze.csv`` really carries ``designfolding-*`` under
+    this step set, with upstream's HYPHEN, and that
+    ``design_largest_hydrophobic_patch_refolded`` really appears. Both are read off
+    ``analyze.py`` at the pinned SHA and neither has been observed. If a name is
+    wrong the column is silently DROPPED, not NA;
+  * that ``refold_design_cif/`` is really written under ``protein-anything`` with the
+    design ``id`` as its stem -- read off ``writer.py``, never observed;
+  * that the ``design_folding`` step runs at all on this image, and that upstream's
+    ``designfolding-bb_rmsd_target`` / ``-bb_target_aligned_rmsd_design`` (computed
+    against an all-ones design mask with no target) do not raise. Those two are NOT
+    collected for that reason, but a crash in them would take the whole step down;
+  * that a de-novo ``protein:`` entity really gets a ``source_context`` entry whose
+    ``source`` is ``"inline"`` AND an ``output_chain``. The fixtures here construct
+    that shape from ``source_context.py``; a real run has never been inspected. If
+    the entry is absent instead, ``chain_map`` reports ``no_source_context`` and the
+    row is excluded by the trust filter -- fail-safe, but not what is documented;
+  * that ``boltzgen check`` accepts a ``protein:`` entity written by this tool, and
+    that BoltzGen does not rename the chosen binder chain anyway;
+  * **that one length really is drawn per BATCH and not per design.** That is read
+    off upstream's own ``--diffusion_batch_size`` help text plus the call chain
+    (``cli/boltzgen.py:1056-1059`` -> ``data_from_yaml.py:247-266`` ->
+    ``schema.py:546``). A real run with ``--binder-length 80-225`` and a known
+    ``--diffusion-batch-size`` settles it: count distinct ``boltzgen_binder_len``
+    values.
+
 WHAT THEY CANNOT PROVE -- these are unknown until a real run
   * that the pinned image BUILDS, that torch 2.10.0 + cuequivariance-ops-cu12 0.11.0 +
     numpy 2.4.6 + numba 0.65.1 + pandas 3.0.6 + gemmi 0.7.5 import together, or that
@@ -58,6 +116,7 @@ Run:  uv run python tools/boltzgen/test_boltzgen.py
 
 import importlib.util
 import json
+import re
 import sys
 import tempfile
 from argparse import ArgumentParser
@@ -145,6 +204,7 @@ def _load(mod: str):
 
 
 _RUN = None  # set in main(); TF() is a convenience for the many resolve_* calls
+_COL = None  # set in main(); _ctx() needs the collector's own arg defaults
 
 
 def TF(path: Path):
@@ -205,6 +265,41 @@ def write_cif(path: Path, chains: dict[str, tuple[str, list[float]]]) -> Path:
     return path
 
 
+def _ctx(out_dir: Path, run_dir: Path):
+    """A CollectCtx for a create collect, with the collector's own flag defaults."""
+    cp = ArgumentParser()
+    cp.add_argument("--force", action="store_true")
+    _COL.add_collect_boltzgen_args(cp)
+    cargs = cp.parse_args([])
+    cargs.run_dir = run_dir
+    cargs.table = "t0"
+    return CollectCtx(
+        df=pd.DataFrame(), args=cargs, table_name="t0", out_dir=out_dir,
+        status_col="boltzgen_status", path_col="boltzgen_path",
+        parent_table=None, parent_df=pd.DataFrame(),
+        lookup=lambda n, c: None, creates_table=True,
+        default_input_column="pdb_path",
+    )
+
+
+def _refusal_chain(run, requested: str, taken: set) -> str:
+    """The text of pick_binder_chain's refusal, or '' if it did not refuse."""
+    try:
+        run.pick_binder_chain(requested, taken)
+    except Exception as e:  # noqa: BLE001
+        return str(e)
+    return ""
+
+
+def _refusal_message(run, args) -> str:
+    """The text of the protocol-mismatch refusal, for asserting what it NAMES."""
+    try:
+        run._reject_protocol_mismatched_flags(args)
+    except Exception as e:  # noqa: BLE001
+        return str(e)
+    return ""
+
+
 def write_npz(path: Path, n_designed: int, n_other: int, sources: list[str],
               output_chains: list[str]) -> Path:
     mask = np.array([1.0] * n_designed + [0.0] * n_other, dtype=np.float32)
@@ -220,8 +315,9 @@ def write_npz(path: Path, n_designed: int, n_other: int, sources: list[str],
 
 def main() -> int:
     global _RUN
+    global _COL
     run = _RUN = _load("run_boltzgen")
-    col = _load("collect_boltzgen")
+    col = _COL = _load("collect_boltzgen")
     img = _load("modal_image")
 
     print("\n-- residue / chain spec parsing ------------------------------------")
@@ -329,9 +425,12 @@ def main() -> int:
 
         print("\n-- the written design spec ----------------------------------------")
         class Args:
+            protocol = run.NANOBODY_PROTOCOL
             target_chains = "A,B"
             scaffolds = ",".join(run.DEFAULT_SCAFFOLDS)
             scaffold_dir = "/opt/bg/sc"
+            binder_length = None
+            binder_chain = None
 
         IDS = {"A": "A", "B": "B"}
         entities = run.build_entities(
@@ -446,7 +545,7 @@ def main() -> int:
                "identity")
         raises("a colon in designed_chain_sequence (more than one designed chain)",
                lambda: col.map_binder(design, npz, refold, f"{nb_seq}:AAAA", 4, STEMS),
-               "single designed nanobody chain")
+               "SINGLE designed binder chain")
 
         two_designed = write_pdb(
             tmpdir / "two.pdb",
@@ -616,6 +715,9 @@ def main() -> int:
             not_binding = None
             scaffolds = ",".join(run.DEFAULT_SCAFFOLDS)
             scaffold_dir = "/opt/bg/sc"
+            protocol = run.NANOBODY_PROTOCOL
+            binder_length = None
+            binder_chain = None
         raises("an epitope on an excluded chain is refused at submit time",
                lambda: run.build_spec("d", target, TwoChain(), lambda n, c: None, {}),
                "not in --target-chains")
@@ -639,11 +741,32 @@ def main() -> int:
               res_ok.chain_id_map, "A>A,B>B")
 
     print("\n-- the forced step/config contract ---------------------------------")
-    check("the step list omits esmfold2_scoring AND filtering",
-          run.STEPS, ("design", "inverse_folding", "folding", "analysis"))
+    # NANOBODY IS UNCHANGED. This is the regression guard for the widening: the
+    # default protocol, and the step list it forces, must be byte-for-byte what the
+    # 2026-10-08 verification and the 2026-10-09 60-design run used.
+    check("the DEFAULT protocol is still nanobody-anything",
+          run.DEFAULT_PROTOCOL, "nanobody-anything")
+    check("the nanobody step list omits esmfold2_scoring AND filtering, unchanged",
+          run.PROTOCOL_STEPS["nanobody-anything"],
+          ("design", "inverse_folding", "folding", "analysis"))
+    check("the legacy STEPS/PROTOCOL globals still name the nanobody path",
+          (run.PROTOCOL, run.STEPS),
+          ("nanobody-anything", ("design", "inverse_folding", "folding", "analysis")))
+    # protein-anything MUST add design_folding: upstream derives designfolding_metrics
+    # from the PROTOCOL (cli/boltzgen.py:1237,1310) while --steps only filters the
+    # list, so omitting it leaves analysis reading a fold_out_design_npz/ that was
+    # never written -- analyze.py:972-977 returns None for every design and the
+    # metrics CSV comes back EMPTY after the whole GPU spend.
+    check("protein-anything adds design_folding",
+          run.PROTOCOL_STEPS["protein-anything"],
+          ("design", "inverse_folding", "folding", "design_folding", "analysis"))
+    check("and still omits esmfold2_scoring and filtering",
+          [s for s in run.PROTOCOL_STEPS["protein-anything"]
+           if s in ("esmfold2_scoring", "filtering")], [])
+    check("only two protocols are offered", set(run.PROTOCOLS),
+          {"nanobody-anything", "protein-anything"})
     check("analysis is forced to skip esmfold2 metrics",
           run.FORCED_CONFIG, (("analysis", "esmfold2_metrics=false"),))
-    check("the protocol is nanobody-anything", run.PROTOCOL, "nanobody-anything")
 
     class Flags:
         num_designs = 50
@@ -667,11 +790,32 @@ def main() -> int:
            "<step> <key>=<value>")
 
     sh = (HERE / "boltzgen.sh").read_text()
-    check("the .sh pins the protocol", "--protocol nanobody-anything" in sh, True)
-    check("the .sh pins the step list",
-          "--steps design inverse_folding folding analysis" in sh, True)
-    check("the .sh never mentions filtering",
-          " filtering" in sh.split("--steps")[1].split("\n")[0], False)
+    # The protocol and step list moved from literals in the .sh into manifest fields
+    # 5 and 6, because the two protocols need different step lists. Fields 1-4 keep
+    # their indices, so a nanobody submit still produces the same command line.
+    check("the .sh takes the protocol from manifest field 5",
+          'BG_PROTOCOL=$(echo "$SAPIA_LINE" | cut -f5)' in sh, True)
+    check("the .sh takes the step list from manifest field 6",
+          'BG_STEPS=$(echo "$SAPIA_LINE" | cut -f6)' in sh, True)
+    check("the .sh still cuts name/spec/out/flags from fields 1-4",
+          all(f'cut -f{i})' in sh for i in (1, 2, 3, 4)), True)
+    check("the .sh interpolates both rather than hard-coding either",
+          '--protocol "$BG_PROTOCOL"' in sh and "--steps $BG_STEPS" in sh, True)
+    check("--steps is word-split (unquoted), --protocol is not",
+          '--steps "$BG_STEPS"' in sh, False)
+    check("an empty protocol field kills the task instead of being passed on",
+          "BG_PROTOCOL:?" in sh and "BG_STEPS:?" in sh, True)
+    # The step list is no longer a literal here, so "does the .sh mention filtering"
+    # is no longer the question -- its PROSE explains why filtering is omitted. What
+    # must hold is that no step list is hard-coded at all, in either protocol's form.
+    check("no step list is hard-coded in the .sh any more",
+          any(f"--steps {' '.join(v)}" in sh for v in run.PROTOCOL_STEPS.values()),
+          False)
+    check("no protocol is hard-coded in the .sh any more",
+          any(f"--protocol {p}" in sh for p in run.PROTOCOLS), False)
+    check("neither forced step list can reach filtering or esmfold2_scoring",
+          sorted({s for v in run.PROTOCOL_STEPS.values() for s in v}
+                 & {"filtering", "esmfold2_scoring"}), [])
 
 
     print("\n-- item 5: the escape hatches cannot redefine the tool --------------")
@@ -684,12 +828,21 @@ def main() -> int:
         ("--config analysis esmfold2_metrics=true", "re-enables esmfold2"),
         ("--use_kernels false --protocol antibody-anything", "hidden among good tokens"),
         ("--protocol=protein-anything", "the = form"),
+        # Added 2026-10-09. --overwrite falsifies the resubmit guard's own stated
+        # premise ("BoltzGen is never run with --overwrite, so those designs would
+        # survive") -- with it, the designs the guard protects are destroyed instead.
+        ("--overwrite", "falsifies the resubmit guard's premise"),
+        ("--reuse", "changes which steps are skipped on a re-run"),
+        # argparse is last-wins, so this silently beats --diffusion-batch-size while
+        # the submit log still prints the warning computed from the TOOL flag.
+        ("--diffusion_batch_size 10", "silently overrides --diffusion-batch-size"),
+        ("--use_kernels false --overwrite", "hidden among good tokens"),
     ):
         raises(f"--extra-flags refuses {bad.split()[0]} ({why})",
                lambda b=bad: run.check_extra_flags(b), "may not contain")
     check("a harmless --extra-flags still passes through",
-          run.check_extra_flags(" --use_kernels false --overwrite "),
-          "--use_kernels false --overwrite")
+          run.check_extra_flags(" --use_kernels false --num_workers 2 "),
+          "--use_kernels false --num_workers 2")
     check("an empty --extra-flags is empty", run.check_extra_flags("   "), "")
     raises("--config-set may not reinstate esmfold2_metrics",
            lambda: run.check_config_set("analysis esmfold2_metrics=true"),
@@ -828,8 +981,10 @@ def main() -> int:
               got2b["g_2"].data["binding_chain_frame"], "label_asym_id")
         check("and the chain-id translation",
               got2b["g_2"].data["chain_id_map"], "B>D")
-        check("and NO binding_resnames, because none was asked for",
-              "binding_resnames" in got2b["g_2"].data, False)
+        # The KEY exists on every row (ROW_KEYS is seeded unconditionally so the
+        # trust filter can never KeyError) -- what must be absent is the VALUE.
+        check("and binding_resnames is NA, because none was asked for",
+              pd.isna(got2b["g_2"].data["binding_resnames"]), True)
 
         # BLOCKER 1: a MISSING per-group record is an error, not a silent NA.
         got2c = collect(None, meta={"runs_root": str(out_dir / "runs")})
@@ -861,8 +1016,13 @@ def main() -> int:
               all(v.status.startswith("error:") for v in stale.values()), True)
         check("and says the attestation does not describe these designs",
               "does not describe these designs" in stale["g_2"].status, True)
-        check("and NOT ONE attestation column rides along on the error row",
-              [k for k in attest if k in stale["g_2"].data], [])
+        # Same distinction: the columns EXIST (seeded), but not one of them carries a
+        # VALUE. Shipping the attestation on a row whose status says the attestation
+        # does not describe it would contradict the message beside it.
+        check("and NOT ONE attestation column carries a VALUE on the error row",
+              [k for k in attest if not pd.isna(stale["g_2"].data.get(k, pd.NA))], [])
+        check("though every one of them EXISTS, so the trust filter cannot KeyError",
+              sorted(k for k in attest if k not in stale["g_2"].data), [])
 
         got3 = collect(dict(base_record, claims=["binding"],
                             binding_resnames="A3=ASP",
@@ -1015,6 +1175,9 @@ def main() -> int:
             not_binding = None
             scaffolds = ",".join(run.DEFAULT_SCAFFOLDS)
             scaffold_dir = "/opt/bg/sc"
+            protocol = run.NANOBODY_PROTOCOL
+            binder_length = None
+            binder_chain = None
         res_div = run.build_spec("d", cif5, DivArgs(), lambda n, c: None, {})
         target_entity = res_div.spec["entities"][0]["file"]
         check("the include block carries the label_asym_id",
@@ -1165,6 +1328,816 @@ def main() -> int:
                lambda: run.label_seq_residues(micro), "microheterogeneity")
         raises("and the message says why the frame would shift",
                lambda: run.label_seq_residues(micro), "DIFFERENT index")
+
+    # =================================================================
+    # protein-anything: the widening, and the nanobody path it must not touch
+    # =================================================================
+
+    print("\n-- --binder-length: the 305-residue trap --------------------------")
+    check("an exact length passes through", run.parse_binder_length("120"), "120")
+    check("whitespace is tolerated", run.parse_binder_length("  120 "), "120")
+    # THE WHOLE POINT. BoltzGen tokenises a sequence spec with
+    # re.findall(r"\d+\.\.\d+|\d+|[a-zA-Z]", ...) (schema.py:947), so the literal
+    # string '80-225' would be read as TWO design blocks, 80 + 225 = 305 residues.
+    check("the workspace's MIN-MAX is TRANSLATED to BoltzGen's MIN..MAX",
+          run.parse_binder_length("80-225"), "80..225")
+    check("BoltzGen's own form is accepted unchanged",
+          run.parse_binder_length("80..225"), "80..225")
+    check("the campaign's range round-trips", run.parse_binder_length("80-225"),
+          "80..225")
+    for bad, why in (
+        ("3..5C6C3", "interleaved fixed residues"),
+        ("80,100", "several blocks"),
+        ("AAAA", "letters"),
+        ("", "empty"),
+        ("80-", "half a range"),
+        ("abc", "nonsense"),
+    ):
+        raises(f"--binder-length refuses {bad!r} ({why})",
+               lambda b=bad: run.parse_binder_length(b),
+               "empty" if bad == "" else "malformed")
+    raises("a reversed range is refused",
+           lambda: run.parse_binder_length("225-80"), "below minimum")
+    raises("a zero-length binder is refused",
+           lambda: run.parse_binder_length("0"), ">= 1")
+    raises("a range starting at 0 is refused",
+           lambda: run.parse_binder_length("0-50"), ">= 1")
+    # Arithmetic sanity: the tokeniser would have read the hyphen form as 80+225.
+    check("the refused hyphen form would have meant 305 residues, not 80..225",
+          sum(int(t) for t in re.findall(r"\d+", "80-225")), 305)
+
+    print("\n-- --binder-chain: a collision is refused, not renamed -------------")
+    check("auto picks a letter the target does not use",
+          run.pick_binder_chain(None, {"A", "B", "C"}), "Z")
+    check("auto skips a taken letter", run.pick_binder_chain(None, {"Z", "Y"}), "X")
+    check("an explicit free letter is honoured",
+          run.pick_binder_chain("Q", {"A", "B"}), "Q")
+    raises("an explicit letter the target uses is REFUSED, not re-pointed",
+           lambda: run.pick_binder_chain("A", {"A", "B"}), "already used by the target")
+    raises("a multi-character chain id is refused",
+           lambda: run.pick_binder_chain("AB", set()), "single letter")
+    raises("a target using all 26 letters is refused",
+           lambda: run.pick_binder_chain(None, set("ABCDEFGHIJKLMNOPQRSTUVWXYZ")),
+           "all 26 chain letters")
+
+    print("\n-- REFUSED, not ignored: flags that mean nothing here --------------")
+
+    class PA:
+        protocol = "protein-anything"
+        binder_length = "80-225"
+        binder_chain = None
+        scaffolds = None
+        scaffold_dir = None
+        spec = None
+        target_chains = "A"
+
+    class NB:
+        protocol = "nanobody-anything"
+        binder_length = None
+        binder_chain = None
+        scaffolds = None
+        scaffold_dir = None
+        spec = None
+        target_chains = "A"
+
+    run._reject_protocol_mismatched_flags(PA())
+    run._reject_protocol_mismatched_flags(NB())
+    check("a clean invocation of either protocol passes", True, True)
+    for attr, value, cls, flag in (
+        ("scaffolds", "7eow", PA, "--scaffolds"),
+        ("scaffold_dir", "/opt/x", PA, "--scaffold-dir"),
+        ("binder_length", "80-225", NB, "--binder-length"),
+        ("binder_chain", "Z", NB, "--binder-chain"),
+    ):
+        raises(
+            f"{flag} is REFUSED under {cls.protocol}, not silently ignored",
+            lambda a=attr, v=value, c=cls: run._reject_protocol_mismatched_flags(
+                type("X", (c,), {a: v})()
+            ),
+            "does not use",
+        )
+    check("the refusal names EVERY mismatched flag, not just the first",
+          sorted(
+              f for f in ("--scaffolds", "--scaffold-dir")
+              if f in _refusal_message(
+                  run, type("X", (PA,), {"scaffolds": "7eow",
+                                         "scaffold_dir": "/opt/x"})()
+              )
+          ),
+          ["--scaffold-dir", "--scaffolds"])
+    raises("protein-anything without --binder-length is refused (no default length)",
+           lambda: run._reject_protocol_mismatched_flags(
+               type("X", (PA,), {"binder_length": None})()),
+           "needs --binder-length")
+
+    print("\n-- the protein-anything spec shape --------------------------------")
+    with tempfile.TemporaryDirectory() as tmp2:
+        tmpdir2 = Path(tmp2)
+        tgt = write_pdb(tmpdir2 / "t2.pdb",
+                        {"A": ("ACDEFGHIKL", [0.0] * 10),
+                         "B": ("MNPQRSTVWY", [0.0] * 10)})
+
+        class PAArgs:
+            protocol = "protein-anything"
+            target_chains = "A,B"
+            binding = "A3,A4"
+            not_binding = None
+            binder_length = "80-225"
+            binder_chain = None
+            scaffolds = None
+            scaffold_dir = None
+
+        res_pa = run.build_spec("d", tgt, PAArgs(), lambda n, c: None, {})
+        ents = res_pa.spec["entities"]
+        check("two entities: target then the de-novo binder", len(ents), 2)
+        check("the target entity comes FIRST (it must not be renamed)",
+              "file" in ents[0], True)
+        check("the binder is a `protein:` entity, not a scaffold file",
+              ("protein" in ents[1], "file" in ents[1]), (True, False))
+        check("its sequence is the translated range",
+              ents[1]["protein"]["sequence"], "80..225")
+        check("its chain id avoids the target's", ents[1]["protein"]["id"], "Z")
+        check("no scaffold list anywhere in the spec",
+              "scaffold" in yaml.safe_dump(res_pa.spec).lower(), False)
+        # The epitope machinery is UNCHANGED by the protocol: same block, same frame,
+        # same translation, with no scaffold entity in the spec.
+        check("the epitope still lands on the target entity",
+              ents[0]["file"]["binding_types"],
+              [{"chain": {"id": "A", "binding": "3..4"}}])
+        check("and its residue names still resolve",
+              res_pa.binding_resnames, ["A3=ASP", "A4=GLU"])
+        check("and the chain-id map is still recorded",
+              res_pa.chain_id_map, "A>A,B>B")
+        check("and the claims walker still sees the epitope with no file binder",
+              run.claims_in_spec(res_pa.spec), ["binding"])
+        check("the binder chain/sequence are carried for the submit record",
+              (res_pa.binder_chain, res_pa.binder_sequence), ("Z", "80..225"))
+
+        # The nanobody spec for the SAME inputs must be unchanged by all of this.
+        class NBArgs(PAArgs):
+            protocol = "nanobody-anything"
+            binder_length = None
+
+        res_nb = run.build_spec("d", tgt, NBArgs(), lambda n, c: None, {})
+        nb_ents = res_nb.spec["entities"]
+        check("nanobody still gets a scaffold FILE entity with a LIST path",
+              isinstance(nb_ents[1]["file"]["path"], list), True)
+        check("still the default five", len(nb_ents[1]["file"]["path"]), 5)
+        check("and its target entity is IDENTICAL to protein-anything's",
+              nb_ents[0], ents[0])
+        check("and no binder chain/sequence is invented for it",
+              (res_nb.binder_chain, res_nb.binder_sequence), ("", ""))
+
+        # {expr} resolution works on --binder-length, as on every other spec flag.
+        class ExprArgs(PAArgs):
+            binder_length = "{lo}-{hi}"
+
+        res_x = run.build_spec(
+            "d", tgt, ExprArgs(),
+            lambda n, c: {"lo": 90, "hi": 110}.get(c), {},
+        )
+        check("{expr} islands resolve inside --binder-length",
+              res_x.spec["entities"][1]["protein"]["sequence"], "90..110")
+
+    print("\n-- end to end: the manifest and the submit record ------------------")
+    with tempfile.TemporaryDirectory() as tmp5:
+        from functools import partial
+        from prosapia.core import ManifestCtx
+        from prosapia.core.base_run import write_run_meta
+
+        outp = Path(tmp5) / "boltzgen"
+        outp.mkdir(parents=True)
+        tgt5 = write_pdb(Path(tmp5) / "t5.pdb",
+                         {"A": ("ACDEFGHIKL", [0.0] * 10)})
+
+        def submit5(extra: list[str], out=outp) -> list:
+            ap = ArgumentParser()
+            ap.add_argument("--table", default=None)
+            ap.add_argument("--input-column", default="pdb_path")
+            ap.add_argument("--force", action="store_true")
+            ap.add_argument("--executor", default="modal")
+            run.add_run_boltzgen_args(ap)
+            a = ap.parse_args(["--target-structure", str(tgt5)] + extra)
+            a.run_dir = Path(tmp5)
+            return run.build_boltzgen_manifest(ManifestCtx(
+                df=pd.DataFrame(), args=a, out_dir=out,
+                lookup=lambda n, c: None,
+                write_meta=partial(write_run_meta, out),
+            ))
+
+        nb_rows5 = submit5(["--binding", "A3"])
+        check("a nanobody submit yields one manifest row", len(nb_rows5), 1)
+        check("with SIX fields (four unchanged, plus protocol and steps)",
+              len(nb_rows5[0]), 6)
+        check("field 5 is the protocol", nb_rows5[0][4], "nanobody-anything")
+        check("field 6 is the step list, space separated",
+              nb_rows5[0][5], "design inverse_folding folding analysis")
+        check("field 1 is still the group name", nb_rows5[0][0], "t5_bg")
+        check("field 4 is still the run-wide flags, with no --protocol in it",
+              "--protocol" in nb_rows5[0][3], False)
+        check("no tab can appear inside a field and split the line",
+              any("\t" in f for f in nb_rows5[0]), False)
+        rec5 = run.read_submit_record(outp / "runs" / "t5_bg")[0]
+        check("the submit record names the protocol", rec5["protocol"],
+              "nanobody-anything")
+        check("and the step list it was run with", rec5["steps"],
+              ["design", "inverse_folding", "folding", "analysis"])
+        check("and still the scaffold allow-list", len(rec5["scaffolds"]), 5)
+        check("and no binder chain was invented for it",
+              rec5["binder_chain_requested"], "")
+
+        outq = Path(tmp5) / "bg_pa"
+        outq.mkdir(parents=True)
+        pa_rows5 = submit5(
+            ["--protocol", "protein-anything", "--binder-length", "80-225",
+             "--binding", "A3", "--diffusion-batch-size", "1"],
+            out=outq,
+        )
+        check("a protein-anything submit yields one manifest row", len(pa_rows5), 1)
+        check("field 5 carries the protocol through", pa_rows5[0][4],
+              "protein-anything")
+        check("field 6 ADDS design_folding", pa_rows5[0][5],
+              "design inverse_folding folding design_folding analysis")
+        recq = run.read_submit_record(outq / "runs" / "t5_bg")[0]
+        check("its record names protein-anything", recq["protocol"],
+              "protein-anything")
+        check("its scaffold allow-list is EMPTY (there is no framework)",
+              recq["scaffolds"], [])
+        check("and the binder chain and length spec are recorded",
+              (recq["binder_chain_requested"], recq["binder_sequence_spec"]),
+              ("Z", "80..225"))
+        check("--diffusion_batch_size reaches the flags",
+              "--diffusion_batch_size 1" in pa_rows5[0][3], True)
+        spec_yaml = yaml.safe_load(
+            (outq / "specs" / "t5_bg.yaml").read_text())
+        check("the written YAML has the protein binder entity",
+              spec_yaml["entities"][1]["protein"],
+              {"id": "Z", "sequence": "80..225"})
+        check("and the epitope on the target entity beside it",
+              spec_yaml["entities"][0]["file"]["binding_types"],
+              [{"chain": {"id": "A", "binding": "3"}}])
+
+        # The refusals, through the REAL parser rather than a stub.
+        raises("--scaffolds with protein-anything is refused at submit time",
+               lambda: submit5(
+                   ["--protocol", "protein-anything", "--binder-length", "100",
+                    "--scaffolds", "7eow"], out=Path(tmp5) / "x1"),
+               "does not use")
+        raises("--scaffold-dir with protein-anything is refused too",
+               lambda: submit5(
+                   ["--protocol", "protein-anything", "--binder-length", "100",
+                    "--scaffold-dir", "/opt/x"], out=Path(tmp5) / "x2"),
+               "does not use")
+        raises("--binder-length with nanobody-anything is refused",
+               lambda: submit5(["--binder-length", "100"],
+                               out=Path(tmp5) / "x3"),
+               "does not use")
+        raises("--binder-chain with nanobody-anything is refused",
+               lambda: submit5(["--binder-chain", "Z"], out=Path(tmp5) / "x4"),
+               "does not use")
+        raises("protein-anything with no --binder-length is refused",
+               lambda: submit5(["--protocol", "protein-anything"],
+                               out=Path(tmp5) / "x5"),
+               "needs --binder-length")
+        print("\n-- RISK 1: the resubmit guard compares the PROTOCOL, not just the "
+              "spec hash --")
+        # Under --spec the written YAML is the user's file verbatim, so it is
+        # byte-identical whichever --protocol was passed. Without an explicit protocol
+        # comparison, a second submit passes the sha check, rewrites .submit.json, and
+        # stamps its own protocol onto designs the OTHER protocol made -- committing,
+        # via the column itself, the exact failure the column was added to prevent.
+        spec_yaml_path = Path(tmp5) / "verbatim.yaml"
+        spec_yaml_path.write_text(yaml.safe_dump(
+            {"entities": [{"file": {"path": str(tgt5)}}]}, sort_keys=False))
+        outs = Path(tmp5) / "bg_spec"
+        outs.mkdir(parents=True)
+
+        def submit_spec(extra, out=outs):
+            ap = ArgumentParser()
+            ap.add_argument("--table", default=None)
+            ap.add_argument("--input-column", default="pdb_path")
+            ap.add_argument("--force", action="store_true")
+            ap.add_argument("--executor", default="modal")
+            run.add_run_boltzgen_args(ap)
+            a = ap.parse_args(["--spec", str(spec_yaml_path)] + extra)
+            a.run_dir = Path(tmp5)
+            return run.build_boltzgen_manifest(ManifestCtx(
+                df=pd.DataFrame(), args=a, out_dir=out,
+                lookup=lambda n, c: None,
+                write_meta=partial(write_run_meta, out),
+            ))
+
+        first = submit_spec([])
+        gdir = outs / "runs" / "verbatim_bg"
+        rec_first = run.read_submit_record(gdir)[0]
+        check("a --spec submit records the protocol FLAG",
+              rec_first["protocol"], "nanobody-anything")
+        # Now make it look like designs exist, which is what arms the guard.
+        (gdir / "intermediate_designs_inverse_folded").mkdir(parents=True)
+        # Same spec, same protocol: a legitimate top-up still works.
+        submit_spec([])
+        check("a top-up with the SAME spec and protocol is still allowed",
+              run.read_submit_record(gdir)[0]["protocol"], "nanobody-anything")
+        # Same spec, DIFFERENT protocol: the sha matches and must not be enough.
+        raises("the same --spec under a DIFFERENT protocol is REFUSED",
+               lambda: submit_spec(["--protocol", "protein-anything"]),
+               "DIFFERENT")
+        raises("and the refusal says the spec hash cannot distinguish them",
+               lambda: submit_spec(["--protocol", "protein-anything"]),
+               "will for ANY protocol")
+        check("and the record still names the protocol that made the designs",
+              run.read_submit_record(gdir)[0]["protocol"], "nanobody-anything")
+        # A record predating protocol/steps proves nothing and must be refused too --
+        # the guard's doctrine is "require a readable match", not "forbid a confirmed
+        # mismatch".
+        old_rec = dict(run.read_submit_record(gdir)[0])
+        old_rec.pop("protocol"); old_rec.pop("steps")
+        (gdir / run.SUBMIT_RECORD).write_text(json.dumps(old_rec))
+        raises("a record with no protocol cannot attest one, so it is refused",
+               lambda: submit_spec([]), "missing a protocol")
+        # A hand-corrupted record must REFUSE THAT GROUP, not kill the whole submit.
+        # list() on a JSON number raises TypeError, which the per-row handler does not
+        # catch; a string degrades to a per-character comparison instead.
+        for broken, why in (
+            (5, "a number, where list() would raise TypeError"),
+            ("design folding", "a string, which list() splits per CHARACTER"),
+            ({"a": 1}, "a mapping"),
+            ([1, 2], "a list of non-strings"),
+        ):
+            rec = dict(old_rec, protocol="nanobody-anything", steps=broken)
+            (gdir / run.SUBMIT_RECORD).write_text(json.dumps(rec))
+            raises(f"a malformed 'steps' ({why}) refuses the group",
+                   lambda: submit_spec([]), "malformed 'steps'")
+            raises("and the message NAMES what the record actually contains",
+                   lambda: submit_spec([]), repr(broken)[:12])
+            # Proof it went through the per-row refusal path rather than dying: an
+            # uncaught TypeError would never reach the "all targets refused" summary.
+            raises("gracefully -- via the per-row refusal, not a traceback",
+                   lambda: submit_spec([]), "were refused")
+        for bad_proto, why in ((7, "a number"), (["x"], "a list")):
+            rec = dict(old_rec, protocol=bad_proto, steps=["design"])
+            (gdir / run.SUBMIT_RECORD).write_text(json.dumps(rec))
+            raises(f"a malformed 'protocol' ({why}) refuses the group too",
+                   lambda: submit_spec([]), "malformed 'protocol'")
+
+        print("\n-- smaller 1: --extra-flags cannot defeat the tool's own flags ----")
+        for blocked in ("--overwrite", "--reuse", "--diffusion_batch_size"):
+            check(f"{blocked} is in BLOCKED_EXTRA_FLAGS",
+                  blocked in run.BLOCKED_EXTRA_FLAGS, True)
+
+        print("\n-- smaller 3: an empty metrics CSV is not an OK collect -----------")
+        csrc = (HERE / "collect_boltzgen.py").read_text()
+        check("the collector branches on a zero-design group",
+              "if n == 0:" in csrc, True)
+        check("and does not print OK for it",
+              "NO DESIGNS --" in csrc, True)
+        check("and names design_folding as the protein-anything cause",
+              "design_folding step did not produce" in csrc, True)
+
+        # An unknown protocol never reaches the tool: argparse rejects it with a
+        # SystemExit (BaseException), so assert the parser's own choice list rather
+        # than trying to catch it.
+        _ap = ArgumentParser()
+        run.add_run_boltzgen_args(_ap)
+        _choices = next(
+            a.choices for a in _ap._actions if a.dest == "protocol"
+        )
+        check("argparse offers exactly the two supported protocols",
+              sorted(_choices), ["nanobody-anything", "protein-anything"])
+        check("and defaults to the nanobody one",
+              _ap.parse_args([]).protocol, "nanobody-anything")
+        check("with --binder-length/--binder-chain/--scaffolds all unset by default",
+              [_ap.parse_args([]).binder_length, _ap.parse_args([]).binder_chain,
+               _ap.parse_args([]).scaffolds, _ap.parse_args([]).scaffold_dir],
+              [None, None, None, None])
+        check("and the defaults resolve to the historical scaffold set",
+              run.resolved_scaffolds(_ap.parse_args([]))[0],
+              ",".join(run.DEFAULT_SCAFFOLDS))
+
+    print("\n-- boltzgen_protocol: a trust column, read from .submit.json -------")
+    with tempfile.TemporaryDirectory() as tmp3:
+        out = Path(tmp3) / "boltzgen"
+
+        def _group(name, protocol, scaffolds, n_designed=4, n_fixed=6, source=None):
+            """One collectable group on disk, as the run module would leave it."""
+            gdir = out / "runs" / name
+            ddir = gdir / col.DESIGN_DIRNAME
+            ddir.mkdir(parents=True, exist_ok=True)
+            (ddir / col.REFOLD_DIRNAME).mkdir(exist_ok=True)
+            (ddir / col.REFOLD_DESIGN_DIRNAME).mkdir(exist_ok=True)
+            seq = "ACDEFGHIKL"[: n_designed + n_fixed]
+            bf = [1.0] * n_designed + [0.0] * n_fixed
+            write_cif(ddir / "d1.cif", {"B": (seq, bf), "A": ("MNPQR", [0.0] * 5)})
+            write_cif(ddir / col.REFOLD_DIRNAME / "d1.cif",
+                      {"B": (seq, [90.0] * len(seq)), "A": ("MNPQR", [90.0] * 5)})
+            write_cif(ddir / col.REFOLD_DESIGN_DIRNAME / "d1.cif",
+                      {"B": (seq, [90.0] * len(seq))})
+            write_npz(ddir / "d1.npz", n_designed, n_fixed + 5,
+                      [source or "gontivimab.cif", "target.cif"], ["B", "A"])
+            pd.DataFrame([{
+                "id": "d1", "file_name": "d1.cif",
+                "designed_chain_sequence": seq,
+                "designed_sequence": seq[:n_designed],
+                "num_design": n_designed,
+                "bb_rmsd_target": 0.4,
+                "designfolding-bb_rmsd_design": 1.2,
+                "designfolding-bb_rmsd": 1.2,
+            }]).to_csv(ddir / col.METRICS_CSV, index=False)
+            spec = {"entities": [{"file": {"path": "t.cif"}}]}
+            specs = out / "specs"
+            specs.mkdir(parents=True, exist_ok=True)
+            text = yaml.safe_dump(spec, sort_keys=False)
+            (specs / f"{name}.yaml").write_text(text)
+            record = {
+                "spec_sha256": run._spec_sha256(text),
+                "scaffolds": scaffolds,
+                "claims": [],
+                "binding_resnames": "", "not_binding_resnames": "",
+                "res_frame": "", "chain_frame": "", "chain_id_map": "",
+            }
+            if protocol is not None:
+                record["protocol"] = protocol
+            (gdir / col.SUBMIT_RECORD).write_text(json.dumps(record))
+            return gdir
+
+        _group("nb", "nanobody-anything", ["/opt/bg/sc/gontivimab.yaml"])
+        _group("pa", "protein-anything", [], n_designed=10, n_fixed=0,
+               source="inline")
+        _group("old", None, ["/opt/bg/sc/gontivimab.yaml"])  # pre-column record
+        (out / ".meta.json").write_text(json.dumps({"runs_root": str(out / "runs")}))
+
+        def _collect(name):
+            ctx = _ctx(out, Path(tmp3))
+            rows = list(col.collect_boltzgen(ctx)(DesignCtx(name, out, ctx.lookup)))
+            return rows
+
+        nb_rows = _collect("nb")
+        pa_rows = _collect("pa")
+        old_rows = _collect("old")
+        check("one row per design under each protocol",
+              (len(nb_rows), len(pa_rows), len(old_rows)), (1, 1, 1))
+        check("the nanobody row says so", nb_rows[0].data["protocol"],
+              "nanobody-anything")
+        check("the minibinder row says so", pa_rows[0].data["protocol"],
+              "protein-anything")
+        check("a record written before the column existed is NA, not a guess",
+              pa_rows and pd.isna(old_rows[0].data["protocol"]), True)
+        check("both collected OK",
+              (nb_rows[0].status, pa_rows[0].status), ("OK", "OK"))
+
+        print("\n-- re-collecting a PRE-COLUMN run_dir: the documented delta -------")
+        # The skill publishes an exact list of what a re-collect of
+        # 20261009_071201_boltzgen_pilot_1tnf_d143 changes, and asserts everything
+        # else is bit-identical. That list has to be DERIVED, not estimated -- this
+        # test derives it. `old` is a pre-column record (no protocol, no steps) on an
+        # UNSTEERED nanobody group, which is the pilot's shape.
+        old_row = old_rows[0]
+        check("the row still collects OK -- fail-closed withholds, never fails",
+              old_row.status, "OK")
+        for name in ("protocol", "scaffold", "binder_refold_cif",
+                     "not_binding_resnames", "binding_resnames", "binding_frame",
+                     "binding_chain_frame", "chain_id_map"):
+            check(f"{name} is NA after a re-collect", pd.isna(old_row.data[name]), True)
+        check("scaffold_src reports NOT-APPLICABLE, not a passed check",
+              old_row.data["scaffold_src"], col.SCAFFOLD_NOT_APPLICABLE)
+        # ...and everything else must be untouched. This is the half of the claim
+        # that makes the non-regression test worth running.
+        check("the mapping-trust columns are UNCHANGED (protocol-independent)",
+              (old_row.data["chain_map"], old_row.data["mapping_seq_identity"]),
+              (col.CHAIN_MAP_CONFIRMED, 1.0))
+        check("the sequence and residue columns are UNCHANGED",
+              (old_row.data["binder_chain"], old_row.data["sequence"],
+               old_row.data["cdr_sequence"], old_row.data["design_resnums"],
+               old_row.data["fixed_resnums"], old_row.data["n_design_res"],
+               old_row.data["binder_len"]),
+              ("B", "ACDEFGHIKL", "ACDE", "1:4", "5:10", 4, 10))
+        check("the science columns present in the CSV are UNCHANGED",
+              old_row.data["bb_rmsd_target"], 0.4)
+        check("and the three removed names do NOT reappear via the NA fill",
+              [k for k in ("plip_hydrophobic_refolded", "target_id",
+                           "free_cysteines") if k in old_row.data], [])
+
+        print("\n-- the nanobody-only columns, under protein-anything ------------")
+        check("nanobody keeps its validated scaffold",
+              (nb_rows[0].data["scaffold"], nb_rows[0].data["scaffold_src"]),
+              ("gontivimab.cif", col.SCAFFOLD_VERIFIED))
+        # Without the has_scaffolds branch this would be ("inline", distinct_from_target)
+        # -- a scaffold NAME and a verdict reading as "checked and fine", for a
+        # protocol with no scaffolds at all.
+        check("protein-anything's scaffold is NA, never 'inline'",
+              pd.isna(pa_rows[0].data["scaffold"]), True)
+        check("and its verdict says NOT APPLICABLE, not distinct_from_target",
+              pa_rows[0].data["scaffold_src"], col.SCAFFOLD_NOT_APPLICABLE)
+        check("the chain LINK is still verified for a de-novo entity",
+              pa_rows[0].data["chain_map"], col.CHAIN_MAP_CONFIRMED)
+        check("nanobody keeps a cdr_sequence",
+              nb_rows[0].data["cdr_sequence"], "ACDE")
+        check("protein-anything's cdr_sequence is NA (the whole chain is designed)",
+              pd.isna(pa_rows[0].data["cdr_sequence"]), True)
+        check("but the column EXISTS, so a -f filter cannot KeyError on it",
+              "cdr_sequence" in pa_rows[0].data, True)
+        check("under protein-anything every position is designed",
+              (pa_rows[0].data["design_resnums"], pa_rows[0].data["fixed_resnums"],
+               pa_rows[0].data["n_design_res"], pa_rows[0].data["binder_len"]),
+              ("1:10", "", 10, 10))
+        check("nanobody keeps a real CDR/framework split",
+              (nb_rows[0].data["design_resnums"], nb_rows[0].data["fixed_resnums"]),
+              ("1:4", "5:10"))
+
+        print("\n-- the binder-alone structure, protein-anything only -------------")
+        check("protein-anything collects the binder refolded ALONE",
+              Path(pa_rows[0].data["binder_refold_cif"]).name, "d1.cif")
+        check("and it is the refold_design_cif, not the complex",
+              col.REFOLD_DESIGN_DIRNAME in pa_rows[0].data["binder_refold_cif"], True)
+        # The KEY exists on a nanobody row (ROW_KEYS is seeded unconditionally, so the
+        # documented-column guarantee needs no qualifier) but its VALUE is NA: issue
+        # #148 means refold_design_cif/ is never written for a nanobody.
+        check("nanobody has the key but NA, never a path (issue #148)",
+              ("binder_refold_cif" in nb_rows[0].data,
+               pd.isna(nb_rows[0].data["binder_refold_cif"])),
+              (True, True))
+        check("the self-consistency metric is collected for protein-anything",
+              pa_rows[0].data["designfolding-bb_rmsd_design"], 1.2)
+        check("and NOT for nanobody, whose CSV cannot carry it",
+              "designfolding-bb_rmsd_design" in nb_rows[0].data, False)
+
+        # A protein-anything group whose binder-alone cif is missing is an ERROR row,
+        # not a quietly absent column: writer.py publishes the npz last, so a CSV row
+        # implies the cif exists.
+        (out / "runs" / "pa" / col.DESIGN_DIRNAME
+         / col.REFOLD_DESIGN_DIRNAME / "d1.cif").unlink()
+        broken = _collect("pa")
+        check("a missing binder-alone cif is an error row, not a dropped column",
+              broken[0].status.startswith("error: missing output file"), True)
+        # The three artifacts share a basename, so the message must name the DIR too.
+        check("and the error names WHICH d1.cif, by relative path",
+              f"{col.REFOLD_DESIGN_DIRNAME}/d1.cif" in broken[0].status, True)
+
+        print("\n-- declared-but-absent is NA, and the COLUMN EXISTS ---------------")
+        # Changed 2026-10-09. Before: an absent declared name never reached
+        # Collected.data, prosapia never minted the column, and a -f filter naming it
+        # raised KeyError. Now: pd.NA, so the table's shape is a function of the TOOL
+        # VERSION, not of what one CSV happened to contain.
+        #
+        # The fixture CSV carries only a handful of columns, so almost every declared
+        # metric is absent -- which is exactly the case under test.
+        nb_data = nb_rows[0].data
+        pa_data = pa_rows[0].data
+        for name in ("delta_sasa_refolded", "liability_score", "complex_plddt",
+                     "design_to_target_iptm", "bb_rmsd_design"):
+            check(f"{name} is PRESENT as a key even though the CSV lacks it",
+                  name in nb_data, True)
+            check(f"and its value is NA, never 0", pd.isna(nb_data[name]), True)
+        check("a metric the CSV DOES carry keeps its value, not NA",
+              nb_data["bb_rmsd_target"], 0.4)
+        # The whole point: a filter can now name any declared column without raising.
+        frame = pd.DataFrame([{f"boltzgen_{k}": v for k, v in nb_data.items()}])
+        for name in ("boltzgen_delta_sasa_refolded", "boltzgen_liability_score"):
+            check(f"a -f filter naming {name} does not KeyError",
+                  bool(frame[frame[name].notna()].empty), True)
+        # Every declared name for THIS protocol, and no name from the other one.
+        check("every CORE_METRICS name is a key on a nanobody row",
+              sorted(set(col.CORE_METRICS) - set(nb_data)), [])
+        check("and on a protein-anything row",
+              sorted(set(col.CORE_METRICS) - set(pa_data)), [])
+        check("the protein-only names reach ONLY the protein-anything row",
+              (sorted(set(col.PROTEIN_PROTOCOL_METRICS) - set(pa_data)),
+               sorted(set(col.PROTEIN_PROTOCOL_METRICS) & set(nb_data))),
+              ([], []))
+        # NA must not be confusable with a measurement. 0 is a measurement.
+        check("no declared-but-absent column was filled with 0 instead of NA",
+              any(nb_data[c] == 0 for c in col.CORE_METRICS
+                  if c not in ("bb_rmsd_target",) and not pd.isna(nb_data[c])),
+              False)
+        # The printed line is now the ONLY detector for a misspelled declared name,
+        # since the KeyError is gone. It must NAME the columns, not count them.
+        import io
+        import contextlib
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            _collect("nb")
+        out_text = buf.getvalue()
+        check("the collect still PRINTS which declared names came back absent",
+              "delta_sasa_refolded" in out_text and "liability_score" in out_text,
+              True)
+        check("and says the column exists rather than being dropped",
+              "written as NA" in out_text, True)
+        check("and names the two causes of an all-NA column",
+              "not produced" in out_text and "name declared here is wrong" in out_text,
+              True)
+        check("and points at --all-metrics as the way to tell them apart",
+              "--all-metrics" in out_text, True)
+        absent_line = next(
+            ln for ln in out_text.splitlines() if "written as NA" in ln
+        )
+        check("the message LISTS the names rather than counting them",
+              len(absent_line.rsplit(": ", 1)[1].split(", ")) > 5, True)
+
+        print("\n-- smaller 2: the FOURTH witness, protein-anything only -----------")
+        # Under protein-anything the whole chain is designed, so the designed-residue
+        # count and the chain length are two independent measurements of the same
+        # object. The three existing witnesses all count DESIGNED residues, so they
+        # agree with each other and miss a mask/chain mismatch entirely.
+        check("a consistent protein-anything row has n_design_res == binder_len",
+              (pa_rows[0].data["n_design_res"], pa_rows[0].data["binder_len"]),
+              (10, 10))
+        # Build a group where the mask covers only part of the chain -- legal under
+        # nanobody, impossible under protein-anything.
+        _group("pa_bad", "protein-anything", [], n_designed=4, n_fixed=6,
+               source="inline")
+        bad = _collect("pa_bad")
+        check("a partial mask under protein-anything is an ERROR row",
+              bad[0].status.startswith("error: MappingError:"), True)
+        check("and the message names both numbers",
+              "4 residues are masked as designed in a chain of 10"
+              in bad[0].status, True)
+        check("and says why it matters, not just that it happened",
+              "residue-indexed column would be displaced" in bad[0].status, True)
+        check("the error row still carries every documented column",
+              sorted(set(col.ROW_KEYS) - set(bad[0].data)), [])
+        check("and publishes NO residue-indexed or count value",
+              [k for k in ("design_resnums", "fixed_resnums", "binder_chain",
+                           "sequence", "cdr_sequence", "n_design_res", "binder_len")
+               if not pd.isna(bad[0].data[k])], [])
+        # ...but it MUST carry what map_binder genuinely measured. This witness fires
+        # AFTER map_binder returns, so discarding its results would make the one row
+        # that needs diagnosing the least diagnosable row in the table. The first
+        # question asked of this error is "was the chain mapping sound and only the
+        # count wrong?" -- and mapping_seq_identity is what answers it.
+        check("the error row CARRIES the measured sequence identity",
+              bad[0].data["mapping_seq_identity"], 1.0)
+        check("and the chain-link verdict, which is not a count",
+              bad[0].data["chain_map"], col.CHAIN_MAP_CONFIRMED)
+        # scaffold_src is safe to publish HERE specifically: under protein-anything
+        # scaffold_of short-circuits before it ever indexes source_context["chains"],
+        # so it is a statement about the protocol, not a positional lookup.
+        check("and scaffold_src, which under this protocol is not positional",
+              bad[0].data["scaffold_src"], col.SCAFFOLD_NOT_APPLICABLE)
+        check("while scaffold itself stays NA, as it always is here",
+              pd.isna(bad[0].data["scaffold"]), True)
+        # The SAME shape is legitimate under nanobody-anything -- a CDR/framework
+        # split is exactly a partial mask. The witness must not fire there.
+        check("the same partial mask is FINE under nanobody-anything",
+              nb_rows[0].status, "OK")
+        check("because a CDR/framework split IS a partial mask",
+              (nb_rows[0].data["n_design_res"], nb_rows[0].data["binder_len"]),
+              (4, 10))
+
+        print("\n-- RISK 3: EVERY documented column exists on EVERY row ------------")
+        # The pd.NA metric fill covered only the declared METRIC names. The trust and
+        # attestation columns were still written on their success paths only, so a
+        # collect in which EVERY design errors produced a table with no
+        # boltzgen_chain_map -- and the mandatory trust filter this tool's skill tells
+        # you to run FIRST raised KeyError. On the exact shape it is most needed for:
+        # the commonest cause of an all-error collect is a -l/-t resolving to a
+        # different out_dir, which the collector's own message names first.
+        check("ROW_KEYS covers the trust columns the documented filter names",
+              sorted({"protocol", "chain_map", "scaffold_src",
+                      "mapping_seq_identity"} - set(col.ROW_KEYS)), [])
+        check("and the whole attestation family",
+              sorted({"binding_resnames", "not_binding_resnames", "binding_frame",
+                      "binding_chain_frame", "chain_id_map"} - set(col.ROW_KEYS)), [])
+        check("and the sequence/structure columns",
+              sorted({"binder_chain", "sequence", "cdr_sequence", "scaffold",
+                      "design_resnums", "fixed_resnums", "n_design_res",
+                      "binder_len", "cif_path", "binder_refold_cif", "id"}
+                     - set(col.ROW_KEYS)), [])
+        for rows, label in ((nb_rows, "nanobody"), (pa_rows, "protein-anything")):
+            check(f"every ROW_KEY is present on a successful {label} row",
+                  sorted(set(col.ROW_KEYS) - set(rows[0].data)), [])
+        # The case that used to break: a group whose record is missing entirely, so
+        # EVERY design errors before the mapping ever runs.
+        import shutil
+        shutil.rmtree(out / "runs" / "nb" / col.DESIGN_DIRNAME
+                      / col.REFOLD_DESIGN_DIRNAME, ignore_errors=True)
+        (out / "runs" / "nb" / col.SUBMIT_RECORD).unlink()
+        orphan = _collect("nb")
+        check("a group with no .submit.json errors every design",
+              orphan[0].status.startswith("error:"), True)
+        check("and STILL carries every documented column",
+              sorted(set(col.ROW_KEYS) - set(orphan[0].data)), [])
+        trust_frame = pd.DataFrame(
+            [{f"boltzgen_{k}": v for k, v in orphan[0].data.items()}]
+        )
+        trust_frame["boltzgen_status"] = orphan[0].status
+        # The literal filter the skill tells every caller to run first. It must not
+        # raise on an all-error table.
+        kept = trust_frame[
+            (trust_frame["boltzgen_status"] == "OK")
+            & (trust_frame["boltzgen_chain_map"].isin(["ok", "ok_renamed"]))
+            & (trust_frame["boltzgen_scaffold_src"].isin(
+                ["in_run_scaffold_list", "distinct_from_target",
+                 "not_applicable_no_scaffold"]))
+        ]
+        check("the documented TRUST FILTER runs on an all-error table instead of "
+              "raising KeyError", bool(kept.empty), True)
+
+    print("\n-- RISK 4: `taken` includes NON-POLYMER subchain ids ----------------")
+    # frames.chains holds POLYMER chains only, so a target carrying ligands, metals or
+    # glycans contributes subchain ids that were invisible to the binder-chain picker.
+    # A collision there is not a clash but a SILENT RENAME (Structure.concatenate logs
+    # and continues) -- the case pick_binder_chain exists to refuse.
+    with tempfile.TemporaryDirectory() as tmp6:
+        tmpdir6 = Path(tmp6)
+        # One polymer chain 'A' plus heteroatoms, written so gemmi assigns the ligand
+        # its own subchain. setup_entities() gives the non-polymer subchain an id in
+        # the same alphabet the polymer ids come from.
+        het = tmpdir6 / "het.pdb"
+        lines = []
+        for i, aa in enumerate("ACDEF", start=1):
+            lines.append(
+                f"ATOM  {i:5d}  CA  {THREE[aa]} A{i:4d}    "
+                f"{i * 3.8:8.3f}{0.0:8.3f}{0.0:8.3f}{1.0:6.2f}{0.0:6.2f}           C"
+            )
+        lines.append("TER")
+        lines.append(
+            "HETATM   90 ZN    ZN Z 901      20.000   0.000   0.000  1.00  0.00"
+            "          ZN"
+        )
+        lines.append("END")
+        het.write_text("\n".join(lines) + "\n")
+        hframes = run.label_seq_residues(het)
+        # The polymer view does not see the ligand at all -- that is the premise of
+        # the bug.
+        check("frames.chains holds the POLYMER chain only",
+              sorted(hframes.chains), ["A"])
+        all_subchains = (
+            {s for subs in hframes.first_chars.values() for s in subs}
+            | {s for subs in hframes.nonpolymer.values() for s in subs}
+        )
+        check("but first_chars/nonpolymer DO see the ligand subchain",
+              len(all_subchains) > len(hframes.chains), True)
+        # The fixed `taken` must cover every id from every source, so the picked chain
+        # collides with none of them.
+        taken_fixed = (
+            {f.label_asym for f in hframes.chains.values()}
+            | set(hframes.chains)
+            | all_subchains
+        )
+        taken_fixed |= {s[:1] for s in list(taken_fixed) if s}
+        picked = run.pick_binder_chain(None, taken_fixed)
+        check("the picked binder chain collides with NOTHING in the file",
+              picked in taken_fixed, False)
+        check("and an explicit request for a ligand subchain's id is REFUSED",
+              all(
+                  "already used by the target" in _refusal_chain(run, sub, taken_fixed)
+                  for sub in sorted(all_subchains) if len(sub) == 1
+              ) if any(len(s) == 1 for s in all_subchains) else True,
+              True)
+        # And the builder actually assembles it that way (not just this test).
+        rsrc = (HERE / "run_boltzgen.py").read_text()
+        check("build_spec folds first_chars into `taken`",
+              "frames.first_chars.values()" in rsrc, True)
+        check("and nonpolymer too",
+              "frames.nonpolymer.values()" in rsrc, True)
+        check("and the first character of each, for a PDB's patch_chain_names",
+              "sub[:1] for sub in list(taken)" in rsrc, True)
+
+    print("\n-- RISK 2: the protocol branches FAIL CLOSED ------------------------")
+    # has_scaffolds must be `== NANOBODY`, never `!= PROTEIN`. The inverted form made
+    # an absent or unrecognised protocol fall into the branch that PUBLISHES a
+    # provenance verdict, so a de-novo design got scaffold "inline" with scaffold_src
+    # `distinct_from_target` -- which reads as *checked and passed*.
+    src = (HERE / "collect_boltzgen.py").read_text()
+    check("has_scaffolds is the positive test, not the negated one",
+          "has_scaffolds = protocol == NANOBODY_PROTOCOL" in src, True)
+    check("and the fail-open form is gone",
+          "has_scaffolds = protocol != PROTEIN_PROTOCOL" in src, False)
+    check("KNOWN_PROTOCOLS is exactly the two this collector interprets",
+          sorted(col.KNOWN_PROTOCOLS), ["nanobody-anything", "protein-anything"])
+    # scaffold_of with has_scaffolds=False must refuse to name ANY source, including
+    # the de-novo entity's "inline" placeholder, and must not reach distinct_from_target.
+    ctxless = {"version": 1, "chains": [
+        {"source": "inline", "output_chain": "Z"},
+        {"source": "/t/target.cif", "output_chain": "A"}]}
+    name_, cmap_, src_ = col.scaffold_of(ctxless, 0, "Z", None, has_scaffolds=False)
+    check("a de-novo entity yields NO scaffold name",
+          pd.isna(name_), True)
+    check("and the NOT-APPLICABLE verdict, never distinct_from_target",
+          src_, col.SCAFFOLD_NOT_APPLICABLE)
+    check("while the chain LINK is still verified",
+          cmap_, col.CHAIN_MAP_CONFIRMED)
+    # The fail-open form would have produced exactly this, which is the bug:
+    open_name, _, open_src = col.scaffold_of(ctxless, 0, "Z", None)
+    check("(for contrast: the nanobody branch WOULD have named 'inline')",
+          (open_name, open_src), ("inline", col.SCAFFOLD_DISTINCT))
+
+    print("\n-- the dropped-column defect: only real columns are declared -------")
+    # All three were declared, all three are absent from the real 60-design run's
+    # tables, and all three are unreachable in upstream at the pinned SHA.
+    for gone, why in (
+        ("plip_hydrophobic_refolded", "count_noncovalents returns only hbonds+saltbridge"),
+        ("target_id", "added to the frame AFTER aggregate_metrics_analyze.csv is written"),
+        ("free_cysteines", "analyze.free_cys defaults False and nothing sets it"),
+    ):
+        check(f"{gone} is no longer declared ({why})",
+              gone in col.CORE_METRICS, False)
+    check("the protein-only metrics are NOT in the shared core list",
+          set(col.CORE_METRICS) & set(col.PROTEIN_PROTOCOL_METRICS), set())
+    check("every protein-only metric name survives the safe-column filter",
+          all(col._SAFE_COLUMN.match(c) for c in col.PROTEIN_PROTOCOL_METRICS), True)
+    check("upstream's hyphen is preserved, so the column matches the raw CSV",
+          "designfolding-bb_rmsd_design" in col.PROTEIN_PROTOCOL_METRICS, True)
 
     print("\n-- the pin ---------------------------------------------------------")
     check("BOLTZGEN_REF is a full 40-char SHA", len(img.BOLTZGEN_REF), 40)
