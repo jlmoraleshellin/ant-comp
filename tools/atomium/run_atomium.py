@@ -66,6 +66,7 @@ Usage:
     sapia run atomium outputs/<run> -t table0 --table-label n05 --model-noise n05
 """
 
+import hashlib
 import json
 from argparse import ArgumentParser
 from collections import defaultdict
@@ -93,7 +94,9 @@ MODEL_NOISES = ("n00", "n01", "n02", "n03", "n04", "n05", "n05_v2", "n06", "n07"
 
 class AtomiumArgs(CommonArgs):
     chains_to_design: str
+    chains_to_design_column: str
     fixed_positions: str
+    fixed_positions_column: str
     tied_positions: str
     symmetry: str | None
     bias_aa: str
@@ -168,6 +171,18 @@ def _check_sampling_temp(spec: str) -> None:
                 f"--sampling-temp: {token!r} is not a number (expected one or more "
                 f"space-separated temperatures, e.g. '0.1' or '0.1 0.2')"
             )
+
+
+def _is_missing(val: str) -> bool:
+    s = val.strip()
+    return not s or s.lower() in ("nan", "none")
+
+
+def _grp_digest(
+    chains: str, fixed_pl: str, tie_mode: str, tied_pl: str, names: list[str]
+) -> str:
+    payload = "\n".join([chains, fixed_pl, tie_mode, tied_pl, *sorted(names)])
+    return hashlib.sha256(payload.encode()).hexdigest()[:16]
 
 
 def _resolve_chains(args: AtomiumArgs, pdb_src: Path) -> str:
@@ -292,15 +307,35 @@ def build_atomium_manifest(ctx: ManifestCtx[AtomiumArgs]) -> list[tuple[str, ...
             "mutually exclusive"
         )
     if (
-        (ctx.args.fixed_positions or ctx.args.tied_positions)
+        (ctx.args.fixed_positions or ctx.args.fixed_positions_column or ctx.args.tied_positions)
         and not ctx.args.chains_to_design
+        and not ctx.args.chains_to_design_column
         and ctx.args.symmetry is None
     ):
         raise ValueError(
-            "--fixed-positions/--tied-positions require --chains-to-design (their "
-            "groups map one-to-one onto those chains), or --symmetry to derive the "
-            "chains and broadcast one group across them"
+            "--fixed-positions/--fixed-positions-column/--tied-positions require "
+            "--chains-to-design or --chains-to-design-column (their groups map "
+            "one-to-one onto those chains), or --symmetry to derive the chains and "
+            "broadcast one group across them"
         )
+
+    # Pre-validate column specs: refuse the whole submit if any qualifying row is missing
+    for col, flag in [
+        (ctx.args.fixed_positions_column, "--fixed-positions-column"),
+        (ctx.args.chains_to_design_column, "--chains-to-design-column"),
+    ]:
+        if not col:
+            continue
+        bad = [n for n in ready.index if _is_missing(str(ready.at[n, col]))]
+        if bad:
+            sample = bad[:10]
+            extra = f" (and {len(bad) - 10} more)" if len(bad) > 10 else ""
+            raise ValueError(
+                f"{flag} column {col!r} is missing or empty for: "
+                + ", ".join(str(n) for n in sample)
+                + extra
+                + "\nUse -f/--filter to exclude these designs."
+            )
 
     # Stage each design (CIF->PDB via the shared cache; PDBs returned as-is) and
     # compute its signature. Positions may resolve per-design via lineage, so grouping
@@ -309,16 +344,26 @@ def build_atomium_manifest(ctx: ManifestCtx[AtomiumArgs]) -> list[tuple[str, ...
     for design_name in sorted(cast(str, n) for n in ready.index):
         input_path = Path(str(ready.at[design_name, ctx.args.input_column]))
         pdb_src = volume_path(ensure_pdb(input_path, ctx.args.run_dir))
-        chains = _resolve_chains(ctx.args, pdb_src)
+        # Resolve chains: column takes priority over the CLI flag
+        if ctx.args.chains_to_design_column:
+            raw_chains = str(ready.at[design_name, ctx.args.chains_to_design_column])
+            chains = _parse_chains(raw_chains) if raw_chains.strip() else ""
+        else:
+            chains = _resolve_chains(ctx.args, pdb_src)
         # Under --symmetry a lone position group describes one asymmetric unit and is
         # replicated across the designed chains (the helper wants one group per chain).
         broadcast = len(chains.split()) if ctx.args.symmetry is not None else None
-        fixed_pl = _parse_positions(
-            ctx.args.fixed_positions,
-            ctx.lookup,
-            design_name,
-            broadcast_to=broadcast,
-        )
+        # Resolve fixed positions: column takes priority over the CLI flag
+        if ctx.args.fixed_positions_column:
+            raw_fp = str(ready.at[design_name, ctx.args.fixed_positions_column])
+            fixed_pl = _parse_positions(raw_fp, ctx.lookup, design_name, broadcast_to=broadcast)
+        else:
+            fixed_pl = _parse_positions(
+                ctx.args.fixed_positions,
+                ctx.lookup,
+                design_name,
+                broadcast_to=broadcast,
+            )
         if ctx.args.symmetry is not None:
             tie_mode, tied_pl = "homo", ""
         elif ctx.args.tied_positions:
@@ -345,11 +390,12 @@ def build_atomium_manifest(ctx: ManifestCtx[AtomiumArgs]) -> list[tuple[str, ...
     tasks_dir = ctx.out_dir / "atomium_tasks"
     tasks_dir.mkdir(parents=True, exist_ok=True)
     manifest_rows: list[tuple[str, ...]] = []
-    gid = 0
     for t, subgroups in enumerate(tasks):
         sub_rows: list[tuple[str, ...]] = []
         for (chains_sig, fixed_pl, tie_mode, tied_pl), members in subgroups:
-            grp_dir = ctx.out_dir / f"grp_{gid}"
+            member_names = [m[0] for m in members]
+            digest = _grp_digest(chains_sig, fixed_pl, tie_mode, tied_pl, member_names)
+            grp_dir = ctx.out_dir / f"grp_{digest}"
             inputs_dir = grp_dir / "inputs"
             inputs_dir.mkdir(parents=True, exist_ok=True)
             for name, pdb_src in members:
@@ -365,7 +411,6 @@ def build_atomium_manifest(ctx: ManifestCtx[AtomiumArgs]) -> list[tuple[str, ...
                     atomium_extra,
                 )
             )
-            gid += 1
         task_file = tasks_dir / f"task_{t}.tsv"
         with open(task_file, "w") as f:
             f.writelines("\t".join(row) + "\n" for row in sub_rows)
@@ -406,6 +451,13 @@ def add_run_atomium_args(parser: ArgumentParser) -> None:
         "structure's first N when --symmetry says so.",
     )
     parser.add_argument(
+        "--chains-to-design-column",
+        type=str,
+        default="",
+        help="Column to read per-design chain lists from (overrides --chains-to-design). "
+        "Missing or empty values refuse the whole submit.",
+    )
+    parser.add_argument(
         "--fixed-positions",
         type=str,
         default="",
@@ -417,6 +469,14 @@ def add_run_atomium_args(parser: ArgumentParser) -> None:
         "chain. E.g. '9:23/10,11,18:20,22'. One group per designed chain is expected, "
         "unless --symmetry broadcasts a single group across them. Empty (default): "
         "redesign everything.",
+    )
+    parser.add_argument(
+        "--fixed-positions-column",
+        type=str,
+        default="",
+        help="Column to read per-design fixed-position specs from (overrides "
+        "--fixed-positions). The column value must be in the position mini-language "
+        "(e.g. '11:18,45:54'). Missing or empty values refuse the whole submit.",
     )
     parser.add_argument(
         "--tied-positions",
