@@ -274,7 +274,7 @@ All of the below was run **locally** (worktree `.venv`, gemmi 0.7.5 / numpy 2.5.
 files pulled from the `sapia-runs-toon` Volume — real docks from
 `outputs/20261002_143419_dimer_phase2`, real BindCraft2 references from
 `inputs/bc2_output_for_anthony/`. The tool has **not** yet been submitted through
-`sapia run` on Modal; that first run is the worker's `-l verification`.
+`sapia run` on Modal; that first run is the orchestrator's `-l verification`.
 
 **1. Synthetic case with a known answer.** Built a C2 dimer as `[G·binder, G·S·binder]`
 from the reference binder, with `S` a true 180° operator and `G` an arbitrary

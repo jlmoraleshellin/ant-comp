@@ -1,7 +1,6 @@
 ---
 name: rpxdock
-description: >-
-  RPXdock rigid-body docking of a scaffold into a ONE-COMPONENT symmetric architecture, scored with residue-pair motif tables, on Modal. SCOPE: only CYCLIC (C2-C17, CxSTACK) is supported and verified; dihedrals and cages are out of scope. Load before composing an rpxdock run or reading its columns; read the scope section first, and the trust metrics, which catch a silently meaningless score.
+description: How to run the custom rpxdock tool on Modal — RPXdock rigid-body docking of a scaffold into a ONE-COMPONENT symmetric architecture, scored with precomputed residue-pair motif tables. SCOPE: only CYCLIC (C2–C17, CxSTACK) docking is supported and verified; the dihedrals Dx_y and the one-component cages are deliberately OUT OF SCOPE and unverified — read the scope section before using them. Covers the premise (origin-centred single-chain monomer input), every flag, the standing campaign decision to use the afilmv_ehl hscore alias and when to revisit it, the hscore Volume and its three aliases, the trust metrics that catch a silently meaningless score, the numpy pin and what it costs, the submit-time input guard (chain count, backbone, models, numbering) that turns a measured >10-minute willutil hang into an instant error, and the failure signatures found while building it. Load before composing an rpxdock run or reading its columns.
 ---
 
 # rpxdock — symmetric rigid-body docking with RPX motif scores
@@ -657,7 +656,7 @@ claim that `--cmd` "exits with its code" was wrong and has been corrected.
 **So never conclude a submit succeeded because `$?` was 0.** Check the output for
 `Submitting N designs`, or — authoritative, and the only check available once the
 stdout is gone — for `<out_dir>/<script>_logs/<script>_modal.json` holding
-`{"app_id", "n_tasks"}`. No file means nothing was queued. A worker that
+`{"app_id", "n_tasks"}`. No file means nothing was queued. An orchestrator that
 trusts the exit code will march straight on to `collect` and report "0 rows" as
 though the designs were simply bad.
 

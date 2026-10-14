@@ -64,7 +64,7 @@ echo "[$(date +%T)] task $SAPIA_TASK_ID: hbdesigner $NAME ($HBD_ARGS)"
 # the builder refuses any token containing whitespace for exactly that reason.
 # A non-zero exit is NOT fatal here: the worker still runs, so the failure is
 # recorded in the table as a status instead of vanishing into a log, and the task
-# then exits with the real code so the worker sees it too.
+# then exits with the real code so the orchestrator sees it too.
 set +e
 "$HBD_BIN" \
     --pdb "$STAGED" \

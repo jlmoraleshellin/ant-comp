@@ -439,7 +439,7 @@ call. **Verified to run against a collected table.**
 
 All of the below was run **locally** (repo `.venv`, gemmi 0.7.5 / numpy 2.5.3). The
 tool has **not** yet been submitted through `sapia run` on Modal or vib; that first
-run is the worker's `-l verification`.
+run is the orchestrator's `-l verification`.
 
 **Test structures** (built from PDB **1A2P**, barnase — 108 resolved aa per chain,
 real coordinates):
