@@ -11,6 +11,18 @@ wheels/
 
 campaigns/
 
+# Agent session state — local only
+.claude/agent-memory/
+
+# Wheel files staged for vib bootstrap (binary, large, not for the repo)
+*.whl
+
+# Campaign-specific target-prep directories and one-off scripts
+20261008_123703_5M2J_vhh3_motif_graft_target/
+scripts/tnf_d143_prep.py
+scripts/vhh_native_trimer.py
+scripts/vhh_trimer_dock.py
+
 # HBPLUS is licence-restricted (confidentiality agreement) and this repo is public.
 # Supply it locally; see tools/protonpottsmpnn/vendor/README.md
 tools/protonpottsmpnn/vendor/hbplus.tar.gz
