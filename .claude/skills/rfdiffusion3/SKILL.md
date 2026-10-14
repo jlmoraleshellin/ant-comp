@@ -111,9 +111,36 @@ RFdiffusion's `ppi.hotspot_res=[A30,A33]` list form does not carry over.** In rf
 ```yaml
 # hotspots.yaml — a whole-residue selection (ALL atoms of each residue)
 select_hotspots: "A47,A123,B42,B155"     # ranges work too: "A47-49"
-infer_ori_strategy: hotspots             # places the origin token 12 Å out
-                                         # along the outward normal from the hotspot COM
+infer_ori_strategy: hotspots             # places the origin token out along the
+                                         # outward normal from the hotspot COM
 ```
+
+**Correction, verified from source 2026-10-09 (`rc_foundry/rfd3/utils/inference.py`,
+`infer_ori_from_hotspots`): the push-out distance is a hardcoded `10.0 Å`, not 12 Å.** 12 Å is a
+*different* constant — a neighbor-search radius used only to find the "core" motif atoms near the
+hotspots, which establishes the core→hotspot outward direction the origin is then pushed along.
+Neither constant is a config field or a `--set`-able override; both are Python literals (the source
+itself flags this as a wart: `"Both this and the distance cutoff should definitely be configs with
+defaults"`). **There is a second strategy, `infer_ori_strategy: com`**
+(`INFER_ORI_STRATEGIES_TO_FUNCTIONS = {"hotspots": ..., "com": infer_ori_from_com}`). **It is not a
+binder-aware centroid — read this before using it.** `infer_ori_from_com` is a plain unweighted
+`np.mean` over every finite-coordinate atom in the whole assembled complex, no chain/motif/hotspot
+selection of any kind (contrast `infer_ori_from_hotspots`, which explicitly masks on
+`is_atom_level_hotspot`). It runs *before* a design's free/designed atoms are zeroed for diffusion,
+so on a typical binder contig — a large fixed target plus a small motif plus a free/designed chain —
+the mean is **dominated by the fixed target's own centroid**, diluted only slightly by the motif.
+It is not anchored on any interface or epitope and is independent of whether `select_hotspots` was
+ever set. Exposes zero parameters (no distance, no selection, no weighting) — if anything more
+rigid than the hotspots strategy, just with nothing to tune. **Verify this is actually what you
+want before using it on a target that heavily outweighs the motif in residue count** — it is easy
+to read the name "com" and assume it means "center of the binder." **To bypass both strategies and their hardcoded distances entirely**, set `ori_token:
+[x, y, z]` directly (sibling field, same `DesignInputSpecification`) — it takes precedence, and
+needs **no compensation for any hidden prior centering**: `set_com` (the function this resolves
+into) performs the *only* raw-frame translation applied to the loaded input coordinates for a
+non-symmetric run, so a coordinate computed from the raw input PDB can be passed as-is. One
+caveat, unresolved by static reading: whether the sampler's own per-timestep stochastic
+re-centering (`centre_random_augment_around_motif`, `rfd3/model/inference_sampler.py`) preserves
+that placement exactly through every denoising step, or only in distribution.
 
 ```yaml
 # atom-level form: the dict picks which atoms carry the annotation
@@ -141,6 +168,47 @@ Constraints worth knowing:
 - Setting `contig`/`length`/`input`/`symmetry`/`partial_t` in both a flag and `--extra-spec` is a
   `SpecConfigError`. The task script prevalidates, so a bad spec fails fast and cheaply — **let it,
   rather than building a probe container to check.**
+
+### Low-temperature sampling — verified from source 2026-10-09
+
+rc-foundry's own binder-design documentation recommends `is_non_loopy: true` plus
+`inference_sampler.step_scale=3` and `inference_sampler.gamma_0=0.2` together, for "greatly
+increased PPI designability" over the defaults. Confirmed mechanics, since two of these three are
+easy to get wrong:
+
+- **`is_non_loopy`** is a real top-level field on `DesignInputSpecification`
+  (`Optional[bool]`) — goes in `--extra-spec`, same as `select_hotspots`.
+- **`--step-scale`** (the CLI flag already in the Flags table, default 1.5) **is**
+  `inference_sampler.step_scale` — confirmed by tracing `run_rfdiffusion3.py`'s override-building
+  straight into the Hydra `compose(overrides=...)` call `rfd3 design` makes. No separate mechanism
+  needed; `--step-scale 3` is the whole fix for that one.
+- **`gamma_0`** has **no dedicated CLI flag**. The only way to set it is the generic
+  `--set inference_sampler.gamma_0=0.2` — confirmed to resolve as a genuine dotted Hydra override,
+  the same path `step_scale` goes through internally. Default confirmed `0.6` (matches
+  `rc_foundry/rfd3/configs/inference_engine/rfdiffusion3.yaml`).
+- So one command needs: `--step-scale 3 --set inference_sampler.gamma_0=0.2` plus
+  `is_non_loopy: true` in `--extra-spec`. The CLI flag and `--set` compose on the same invocation
+  without conflict (different keys).
+
+### Burial conditioning — `select_exposed` / `select_buried` / `select_partially_buried`
+
+Three sibling fields to `select_hotspots`, same `Optional[InputSelection]` type, same contig-style
+string syntax, same **input-file numbering** (not renumbered output), same requirement that `input`
+be set first. Verified exact field names from source — don't assume the names without checking;
+this codebase moves (`dev` keeps moving — see the top-level project note).
+
+```yaml
+select_exposed: "D30,D31,D33"     # RASA-exposed conditioning
+select_buried: "D29,D51"          # RASA-buried conditioning
+select_partially_buried: "D60"    # the middle bin, if wanted
+```
+
+**These three are mutually exclusive, and it is enforced as a hard error, not a soft preference.**
+A residue appearing in more than one of the three raises `ValueError` at spec-build time
+(`assert_exclusivity`, the same per-row build path any other bad field goes through) — no silent
+"last one wins," no warning-only. Catch an overlapping residue list before submitting; it costs
+nothing to check and the error arrives at build time regardless, so a bad list fails the whole
+design, not just one annotation.
 
 ### Contig traps for a two-chain target
 

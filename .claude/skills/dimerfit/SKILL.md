@@ -1,6 +1,7 @@
 ---
 name: dimerfit
-description: How to run the custom dimerfit tool — placing a C2 dock back into the binder/target frame through one protomer, then measuring whether the partner protomer occludes the target binding site (we want it to). Covers the premise and where its numbers are meaningless, the lineage-resolved reference and epitope columns, the chain-convention trap (binder on B, target on A), the mapping-trust columns that catch a silently wrong superposition, the two opposite-signed requirements that must not be collapsed, and every column it collects. Load before composing a dimerfit run or interpreting its columns.
+description: >-
+  Places a C2 dock back into the binder/target frame through one protomer and measures whether the partner protomer occludes the target binding site (we want it to). Load before composing a dimerfit run or interpreting its columns. Traps: outside its premise the numbers are meaningless; binder is chain B and target chain A; read the mapping-trust columns first, since they catch a silently wrong superposition; the two opposite-signed requirements must not be collapsed.
 ---
 
 # dimerfit

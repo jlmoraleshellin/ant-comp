@@ -52,8 +52,9 @@ were read, not their prose):
   reference structure this question does not have. Its hotspots are matched against a
   reference-to-design residue mapping, and an unmatched hotspot is a **warning** there, not
   an error. Different premise → a different tool, not a fork.
-- **`ssprofile`** — `n_iface_res` counts residues on the **binder** side and says nothing
-  about which target residues they touch.
+- **`ssprofile`** — Rg and DSSP helix/strand/loop fractions of the selected chain **alone**;
+  it has no interface columns at all (no `n_iface_res`). The binder-side interface count is
+  this tool's `n_iface_design_res`.
 
 ## Premise and scope limits
 

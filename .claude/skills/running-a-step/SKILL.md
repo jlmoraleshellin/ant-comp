@@ -123,10 +123,45 @@ This exists because the caller will turn your numbers into a scientific claim, a
 
 **`collect` takes no filter**, so it walks the whole table and stamps `missing` on rows that were never submitted. Expected — but it means `<leaf>_status` is non-empty for rows you deliberately skipped, and a `missing` count is not a failure count.
 
+## One shared `-l` label across several submits: collect only sees the last one
+
+**Measured 2026-10-09 (`ssprofile`, but the mechanism is generic to any tool).** If you submit several `sapia run` calls against the *same table*, all sharing one `-l/--dir-label` (e.g. ten shards of a scale-up, each with a different `-i` column but one common label so their results land in one unified column set), they all write into one shared output dir — and **one shared `.meta.json` sidecar**. Each `sapia run` call *overwrites* that sidecar with its own `input_column`/`filter`. `sapia collect`'s readiness check (`CollectCtx.ready`) reads `input_column` from that one sidecar, **not** from any given submit's own filter — so a single `collect` call after all N submits only recognises the **last submit's** shard. The other shards' rows are not marked `missing`; they are simply invisible to that collect call, and the row count silently looks like "N - (last shard's count)" short.
+
+This is a **collect-side** bug, not a computation bug: the actual per-design task results on disk are correct for every shard (verified by spot-checking raw result files from several of the "missing" shards — `status OK`, correct `input_column`/`source_path` for their own shard). Only the shared sidecar's pointer is stale.
+
+**The fix, and the rule going forward:** when several submits must share one `-l` label on one table, **collect immediately after each submit, before submitting the next** — never batch all the submits and collect once at the end. If you discover the problem after the fact (several submits already done, one collect already run and short), you can repair it: rewrite `.meta.json`'s `input_column`/`filter` back to each shard's own values and re-run `collect` once per shard — but prefer not needing to.
+
+Report this explicitly if you hit it: which shards were missed by the naive collect, and that you confirmed (from raw per-design files, not the table) that their actual results were already correct on disk before you repaired the collect step.
+
+## A later submit's `.exit` files can be read as an earlier submit's completion, on a shared leaf
+
+**Measured 2026-10-09 (`proteinmpnn`, but the mechanism is generic — it is prosapia's own executor
+code, not anything tool-specific).** `<leaf>/<script>_logs/` is per table+leaf and is **never
+cleared** between separate submits sharing one `-l` label — each submit's task-id numbering
+restarts at 1, and the directory just accumulates `.exit`/`.out`/`.err` files from every submit
+that ever ran against that leaf. If you submit shard 1 (say, 3 tasks), wait for its 3 `.exit`
+files (all `0`), collect, then submit shard 2 (say, 4 tasks) to the **same leaf**: the moment
+shard 2 is queued, shard 1's `proteinmpnn_1..3.exit` files are *still on disk, still all `0`*. A
+wait loop that checks "`n_tasks` `.exit` files exist, all `0`" without first confirming which
+`.exit` files are *new* can report shard 2 complete **before its own containers have even
+started** — and a collect run at that point silently returns a short or empty result for that
+shard, with no error anywhere (a missing FASTA/result is reported only as a stdout print by most
+collectors, never a status column).
+
+**The fix:** before each submit to a shared leaf, either (a) record the exact set of `.exit`
+filenames present, and after submitting wait specifically for **new** filenames not in that set
+(not just "any `.exit` files, all `0`"), or (b) clear `<leaf>/<script>_logs/*.{exit,out,err}` and
+the `*_modal.json` sidecar immediately after collecting one submit and before queuing the next.
+Either is sufficient; state in your report which one you used. This is now a **hard correctness
+requirement** for any multi-submit run sharing one leaf, not just a tidiness measure — the
+shared-`-l`-label section above (`.meta.json`/collect visibility) and this one are two *different*
+failure mechanisms that both bite the same "N submits, one shared label" pattern, and fixing one
+does not fix the other.
+
 ## Skills
 
 Load **`prosapia`** before your first `sapia` command (your definition may preload it). It is the workbench contract: tables and lineage, `create` vs `update` and how the output table is derived, the base run/collect flags, labels, the ready set, and the traps that make a run silently submit nothing.
 
-Then load the **tool's own skill** before composing its flags. The tool skills were written against Modal; read them with that filter if you are on another executor — tool flags, input columns, collected columns, bin-packing and every scientific trap are still true; anything about Volumes, images, `modal-shell`, `--gpu-type`, build times or `.exit` files is not.
+Then load the **tool's own skill** before composing its flags. The tool skills were written against Modal; read them with that filter if you are on another executor — tool flags, input columns, collected columns, bin-packing and every scientific trap are still true; anything about Volumes, images, `modal-shell`, `--modal-gpu`, build times or `.exit` files is not.
 
 `sapia run <tool> --help`, run on your executor, is authoritative for flags. **Don't guess flag names.**

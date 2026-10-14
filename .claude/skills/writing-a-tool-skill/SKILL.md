@@ -89,7 +89,7 @@ A verified command line, then every flag with its **default** — defaults are w
 they do not think about it, so a default that is wrong for the common case is itself a trap and
 should be bolded. Include resources and whether the manifest builder forces `gpus_per_task = 0`.
 
-Mark anything **executor-specific**. A statement about Volumes, images, `modal-shell`, `--gpu-type`,
+Mark anything **executor-specific**. A statement about Volumes, images, `modal-shell`, `--modal-gpu`,
 image build times or `.exit` files is Modal-only, and a worker on a cluster will read this file. Label
 it rather than deleting it: *"(Modal only)"*.
 

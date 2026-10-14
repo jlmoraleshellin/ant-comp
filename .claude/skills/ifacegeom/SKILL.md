@@ -1,6 +1,7 @@
 ---
 name: ifacegeom
-description: How to run the custom ifacegeom tool — recording a binder's interface footprint on its target (the epitope residue list, as a column that survives lineage), the target-side histidine count, and where the binder's N- and C-termini sit relative to that interface. Covers the two selection methods and why the vector one is the default, the chain-selection trap, the residue-label format every downstream tool parses, and every column it collects. Load before composing an ifacegeom run or interpreting its columns.
+description: >-
+  Records a binder's interface footprint on its target (the epitope residue list, a column that survives lineage), the target-side histidine count, and where the binder's N- and C-termini sit relative to the interface. Load before composing an ifacegeom run or interpreting its columns. Traps: the vector selection method is the default for a reason, chain selection is easy to get wrong, and every downstream tool parses the residue-label format.
 ---
 
 # ifacegeom
