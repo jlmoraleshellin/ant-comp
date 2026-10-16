@@ -301,8 +301,9 @@ costs a submit. Write the filter into the run_dir (on Modal, through the
 workstation with a `--cmd` heredoc — a local path does not exist in the container)
 and pass that path. Because the module is applied to the whole DataFrame before the
 manifest is built, it is also the supported way to run on **one named design** or a
-handful — `return df[df["name"] == "design_3"]` — which is how you buy a cheap probe
-before committing a batch.
+handful — `return df[df.index == "design_3"]` — which is how you buy a cheap probe
+before committing a batch. (`name` is the DataFrame **index**, not a column, so
+`df["name"]` raises `KeyError`; see the `prosapia` skill.)
 
 ## On-disk layout
 

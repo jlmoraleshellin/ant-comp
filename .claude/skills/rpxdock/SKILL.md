@@ -683,8 +683,9 @@ prosapia declares `-f` as `type=Path` and loads it with
 filter into the run_dir (on Modal, through the workstation with a `--cmd` heredoc;
 a local path does not exist in the container) and pass that path. Since the module
 sees the whole DataFrame before the manifest is built, it is also the supported way
-to dock **one named scaffold** — `return df[df["name"] == "design_3"]` — before
-committing a batch.
+to dock **one named scaffold** — `return df[df.index == "design_3"]` — before
+committing a batch. (`name` is the DataFrame **index**, not a column, so `df["name"]`
+raises `KeyError`; see the `prosapia` skill.)
 
 ### A failed scaffold mints **no row at all**
 This is a `create` tool: a scaffold whose dock failed has no entity to key a row

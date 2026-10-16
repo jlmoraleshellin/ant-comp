@@ -119,8 +119,14 @@ You never subset by hand. The driver submits rows with a **present `--input-colu
 minus those already `OK` for this leaf, unless `--force`. A `-f` filter is applied first;
 the framework's own filtering applies on top of whatever it returns. Because the module
 sees the whole frame before the manifest is built, it is also the supported way to run a
-tool on **one named design** or a small subset — `return df[df["name"] == "design_3"]` —
+tool on **one named design** or a small subset — `return df[df.index == "design_3"]` —
 which is how you buy a cheap probe before committing a batch.
+
+**`name` is the index, not a column.** `data_manager.py` reads every table with
+`pd.read_csv(..., index_col="name")`, so `df["name"]` raises `KeyError: 'name'` and the
+whole submit dies before anything is queued. Match on `df.index`. Guard the result too:
+a filter that returns zero rows prints `No designs to submit.` and **exits 0**, so a
+typo'd design name looks like a clean run — `assert len(out) == 1` is worth the line.
 
 The already-`OK` skip only fires for **`update`** tools, whose status column lives in the table being
 read. For a **`create`** tool that column lives in the *child* table, so **every ready row is
