@@ -259,15 +259,29 @@ is the absence of a measurement.
 
 ## Status
 
-**Reviewed, not yet verified on real data.** Built 2026-10-10. Its 178 self-test checks pass (`uv run
-python tools/posrmsd/test_posrmsd.py`). It was smoke-run locally on one real rfd3
-binder-scaffolding backbone (4 chains, binder D = 115 residues, numbered 1..115 gapless), against a
-rotated extraction of its own chain D. That gave RMSD 0, `seq_match_frac` 1, and a refusal without
-`--chain-b`. `tool-reviewer` (2026-10-10) found no code defect that produces a believable wrong
-number — **verdict: safe to proceed to real-data verification** — but flagged two things now fixed
-above: (1) `seq_match_frac == 1.0` does not by itself certify the spec is the graft (see the trust
-table); (2) a rerun under one prefix after changing the spec/chains silently mixes old and new
-measurements under one column unless `--force` or a new `--output-prefix` is used. It has **not**
-been run on Modal or vib, and never on a real Boltz-vs-backbone pair — that real-data verification,
-including the cross-check against `motifrmsd_ref_motif_seq` the reviewer specified, is the next
-step.
+**Verified on real data, twice, on Modal.** Built 2026-10-10. Its 178 self-test checks pass (`uv run
+python tools/posrmsd/test_posrmsd.py`). `tool-reviewer` (2026-10-10) found no code defect that
+produces a believable wrong number, and flagged two things fixed above: (1) `seq_match_frac == 1.0`
+does not by itself certify the spec is the graft (see the trust table); (2) a rerun under one prefix
+after changing the spec/chains silently mixes old and new measurements under one column unless
+`--force` or a new `--output-prefix` is used.
+
+Two production runs on `outputs/20261009_130629_5M2J_vhh_redmotif_lowtemp_scaleup`, 2704 rows each,
+both `status OK` on every row:
+
+- **2026-10-10**, `table1` (ProteinMPNN, 24 pinned positions): `rmsd` median 2.078 Å.
+- **2026-10-14**, `table1_red17` (atomium, 17 pinned positions): `rmsd` median 2.007 Å,
+  `seq_match_frac == 1.0` on all 2704, `b_motif_seq` equal to the expected motif identity on
+  2704/2704, and segment RMSDs reconstructing the global `rmsd` to within 0.0007 Å.
+
+Both runs reproduce the headline caveat this tool exists to expose: **a motif-restricted RMSD can be
+worse than the whole-chain self-consistency RMSD even when sequence identity at the pinned positions
+is perfect on every row** (2.0-2.1 Å motif vs ~1.6 Å whole-chain in both arms). Sequence held and
+geometry held are independent claims.
+
+**Comparing `worst_seg_rmsd` across runs is only valid when the specs have the same segmentation.**
+A spec of the same residues with interior positions removed fragments into more, shorter segments —
+24 pins as 3 contiguous segments became 17 pins as 9 segments including 5 singletons — and after one
+global fit a singleton's segment RMSD is just that residue's displacement. The worst of 9 short
+segments is drawn from a noisier distribution than the worst of 3 long ones, so the metric changes
+meaning between specs even when the geometry does not.
