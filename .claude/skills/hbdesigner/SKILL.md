@@ -232,10 +232,17 @@ write the wrong residues. `--sel-chains` needs no graft anyway (it returns those
 chains with their own sequence), but note it can **reorder the chains** relative to
 your input.
 
-**5. `--n-workers 0` is not "no parallelism" — it crashes.** Upstream builds its
-packing DataLoader with `persistent_workers=True`, which raises on
-`num_workers=0`, and `Pool(0)` raises too. The builder refuses anything below 1.
-Use `--n-workers 1`.
+**5. `--n-workers 1` is required. Any value above 1 deadlocks every task.**
+Upstream calls a fork-based `multiprocessing.Pool` from a parent that already
+holds an initialized CUDA context, a threaded PyRosetta process, and
+`persistent_workers=True` DataLoader workers. Forking under that combination
+deadlocks all tasks in minimization/scoring — they stall at an identical byte
+offset in the `.out` file and burn their full 4-hour timeout producing nothing.
+Measured at validation: at the default (`--n-workers` = CPU count = 16), all
+tasks stall; at `--n-workers 1`, a 152-residue C2 dimer completes in ~45 s.
+**Always pass `--n-workers 1`.** `--n-workers 0` also crashes (upstream
+`Pool(0)` and `persistent_workers=True` DataLoader both raise); 1 is the only
+safe value.
 
 **6. `wandb` is a hard import dependency.** `inference_hbdesigner` imports the
 training module, which imports `wandb` at module level. The image and the task
