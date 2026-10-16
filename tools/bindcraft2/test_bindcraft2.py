@@ -338,7 +338,6 @@ def t_settings_regression(tmp: Path) -> None:
         hotspots="A54,A56",
         coldspots=None,
         binder_lengths="60-100",
-        copies=None,
         num_designs=10,
         max_trajectories=200,
         campaign_seed=None,
@@ -401,78 +400,6 @@ def t_settings_regression(tmp: Path) -> None:
     )
 
 
-def t_oligomer_copies(tmp: Path) -> None:
-    """--copies: the homo-oligomer chain count, and what it refuses."""
-    target = touch_pdb(tmp, "TRIMER")
-
-    def build(copies):
-        args = Namespace(
-            targets=None,
-            target_pdb=target,
-            shipped_target=None,
-            chains="A,B,C",
-            hotspots=None,
-            coldspots=None,
-            binder_lengths=None,
-            copies=copies,
-            num_designs=None,
-            max_trajectories=None,
-            campaign_seed=None,
-            trajectory_only=False,
-            no_resume=False,
-        )
-        return run_bc2._build_settings(
-            "TRIMER_bc2", target, args, lambda n, c: None, tmp / "camp", {}
-        )
-
-    check(build(3)["copies"] == 3, "--copies 3 lands as the `copies` campaign setting")
-    check(build(1)["copies"] == 1, "--copies 1 is allowed (an ordinary single binder)")
-    # Omitted must stay omitted: BindCraft2's own default, or the modality preset's 2
-    # under homo_oligomer. Writing an explicit 1 here would silently beat that preset.
-    check("copies" not in build(None), "--copies omitted writes no `copies` key at all")
-
-    for bad in (0, -2):
-        raises(
-            lambda bad=bad: build(bad),
-            "must be 1 or more",
-            f"--copies {bad} is refused at submit time",
-        )
-
-    # The target is three chains; nothing in the wrapper caps or inspects that.
-    check(
-        build(3)["targets"][0]["chains"] == "A,B,C",
-        "a trimeric target passes through as its three chains",
-    )
-
-    args = Namespace(
-        targets=None,
-        target_pdb=target,
-        shipped_target=None,
-        chains=None,
-        hotspots=None,
-        coldspots=None,
-        binder_lengths=None,
-        copies=3,
-        num_designs=None,
-        max_trajectories=None,
-        campaign_seed=None,
-        trajectory_only=False,
-        no_resume=False,
-    )
-    raises(
-        lambda: run_bc2._build_settings(
-            "TRIMER_bc2",
-            target,
-            args,
-            lambda n, c: None,
-            tmp / "camp",
-            {"copies": 2},
-        ),
-        "both a dedicated flag and --extra-settings",
-        "--copies and an --extra-settings `copies` collide",
-    )
-
-
 def _manifest_args(tmp: Path, **kw) -> "Namespace":
     base = dict(
         run_dir=tmp,
@@ -486,7 +413,6 @@ def _manifest_args(tmp: Path, **kw) -> "Namespace":
         hotspots=None,
         coldspots=None,
         binder_lengths=None,
-        copies=None,
         num_designs=None,
         max_trajectories=None,
         campaign_seed=None,
@@ -797,7 +723,6 @@ def main() -> None:
             ("--targets flag exclusivity", t_exclusivity),
             ("target_path resolution and {expr}", lambda: t_target_path_and_expr(tmp)),
             ("settings file regression", lambda: t_settings_regression(tmp)),
-            ("--copies (homo-oligomeric binder)", lambda: t_oligomer_copies(tmp)),
             ("manifest end to end", lambda: t_manifest_end_to_end(tmp)),
             ("single-target collect (regression)", lambda: t_single_target_collect(tmp)),
             ("multi-target collect", lambda: t_multi_target_collect(tmp)),

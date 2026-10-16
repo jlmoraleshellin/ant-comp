@@ -7,11 +7,11 @@ Collect BindCraft2 campaign results into the (child) binder table.
 with a table this collector can read:
 
     campaigns/<name>/1_Trajectories/!_Trajectories.csv        one row per attempt
-    campaigns/<name>/1_Trajectories/<design>/<design>_trajectory[_<target>].cif
+    campaigns/<name>/1_Trajectories/<design>/<design>_trajectory.cif
     campaigns/<name>/2_Refolded/!_Refolded.csv       every scored candidate + outcome
-    campaigns/<name>/2_Refolded/Complexes/<design>[_<target>].cif
+    campaigns/<name>/2_Refolded/Complexes/<design>.cif
     campaigns/<name>/3_Ranked/!_Ranked.csv          the accepted designs, best-first
-    campaigns/<name>/3_Ranked/<design>[_<target>].cif
+    campaigns/<name>/3_Ranked/<design>.cif
 
 Which one to read is **decided by the run, not guessed here**: a `--trajectory-only`
 run fills `1_Trajectories` and never accepts anything, so `3_Ranked` stays empty. The
@@ -30,38 +30,6 @@ A trajectory row's ``terminated`` column names the stage the attempt stopped at;
 blank means it ran to completion. They are collected rather than dropped, so filter
 on it (``-f``) instead of assuming every row is a usable backbone.
 
-MULTI-TARGET
-------------
-A campaign with TWO OR MORE targets does not write one column per target. BindCraft2
-packs each metric into a single cell, semicolon-separated, in the order given by the
-row's own ``targets`` column -- which is sorted by weight, so off-targets (negative
-weight) come last (``campaign_output.target_ordered_row``; a campaign with fewer than
-two targets is left completely untouched, so single-target tables are unaffected).
-
-A packed cell is not a number: ``-f`` cannot threshold it and a sort would order it
-as text. So this collector keeps the packed cell verbatim **and** splits it:
-
-    bindcraft2_targets          hPDL1;mPDL1;hPD1
-    bindcraft2_target_weights   1;1;-0.5
-    bindcraft2_i_pTM            0.82;0.79;0.21     <- verbatim, as BC2 wrote it
-    bindcraft2_i_pTM__hPDL1     0.82               <- filterable
-    bindcraft2_i_pTM__mPDL1     0.79
-    bindcraft2_i_pTM__hPD1      0.21
-    bindcraft2_i_pTM__worst     0.79               <- binding targets only
-    bindcraft2_i_pTM__selectivity  0.58            <- weakest binder vs best off-target
-
-The summary columns cover the **binding** targets only, mirroring
-``campaign_output.on_target_mean``: averaging an off-target in would reward binding
-the thing you are trying to avoid. They are emitted only for metrics whose direction
-is known (METRIC_DIRECTION below); a metric outside that map still gets its
-per-target split, just no summary.
-
-Structures are per-target too (``<design>_<target>.cif``). ``<leaf>_path`` is the
-highest-weight binding target's complex -- the one a downstream predictor should
-look at -- and every other target's complex is kept beside it as
-``<leaf>_path__<target>``. The earlier version of this collector globbed and took
-the first match, which silently picked one arbitrary target and dropped the rest.
-
 Rows are keyed by BindCraft2's own ``design`` identity rather than by position:
 ``!_Ranked.csv`` is re-sorted by ``i_pDAE`` after every acceptance, so an index into
 it is not stable across a re-collect, while the design name (campaign, modality,
@@ -69,16 +37,44 @@ length and recipe hash) is. The submitter sets ``campaign_name`` to the parent r
 name, so a design name already starts with its parent; the prefix is only added here
 when a --set override has changed that.
 
-Each complex is converted to PDB (downstream tools consume PDB) and becomes the row's
-``<leaf>_path``; the source mmCIF stays available as ``<leaf>_cif_path``. Note the
-structure is the **complex**, binder + target, not the binder alone -- unless the
-campaign ran with ``--save-monomers``, in which case the free binder is recorded
-separately as ``<leaf>_monomer_path``.
+Each accepted complex is converted to PDB (downstream tools consume PDB) and becomes
+the row's ``<leaf>_path``; the source mmCIF stays available as ``<leaf>_cif_path``.
+Note the structure is the **complex**, binder + target, not the binder alone.
 
-If ``archive_trajectories`` zipped the per-design folders, the structures are read
-straight out of the zip (stdlib ``zipfile``; the archive is a plain deflate zip whose
-members are relative to ``1_Trajectories``) into ``<out_dir>/.unarchived/``. Nothing
-in the campaign folder is modified.
+Multi-target campaigns (``sapia run bindcraft2 --targets ...``)
+--------------------------------------------------------------
+A design is still **one row** -- one binder sequence is one entity, however many
+targets it was optimised against. What changes is that every reading becomes several.
+Two upstream behaviours, both silently mis-read by a single-target collector:
+
+* **File fan-out.** With two or more prepared states the written filename gains a
+  ``_<target name>`` suffix (``campaign_output.accepted_state_suffixes``), and that
+  suffix is *empty* for a single target -- so the filename shape changes the moment a
+  second target appears. One design writes one complex per target. File order is
+  alphabetical while the CSV's target order is by descending weight, so "the first
+  file" and "the first value in a cell" are not the same target.
+* **Semicolon cells.** ``campaign_output.target_ordered_row`` collapses every
+  per-target reading into one ``;``-joined string (``0.82;0.79;0.31``), ordered by
+  descending weight then name, with **empty positions kept** for missing readings, and
+  adds the row's own key: ``targets`` and ``target_weights``.
+
+So this collector splits each ``;`` cell into one column per target, keyed on the
+row's own ``targets`` cell -- never on position, never on alphabetical order:
+
+    bindcraft2_i_pTM_hEGFR        an ON-target reading
+    bindcraft2_i_pTM_off_hERBB2   an OFF-target (detarget) reading
+    bindcraft2_path_hEGFR         that target's complex
+    bindcraft2_path               the HIGHEST-WEIGHT on-target complex
+
+An off-target's columns carry an ``off_`` infix because upstream deliberately excludes
+detargets from its own ranking (``on_target_mean``), and averaging or comparing a
+detarget reading against a binding reading inverts its meaning. ``run_bindcraft2.py``
+refuses a target actually named ``off_*`` so the infix stays unambiguous.
+
+**Error contracts.** A cell whose ``;`` value count disagrees with the number of names
+in ``targets`` makes that design an ``error`` status -- never a best-effort parse. A
+missing per-target complex is ``NA``, never a substituted sibling file. An empty
+position in a ``;`` cell is ``NA``, never ``0``.
 
 Safe to re-run: rows are rebuilt from the CSV and the structures on disk.
 
@@ -88,7 +84,7 @@ Usage:
 """
 
 import json
-import zipfile
+import re
 from argparse import ArgumentParser
 from pathlib import Path
 from typing import Any, Callable, Iterable, NamedTuple
@@ -111,51 +107,178 @@ CAMPAIGNS_DIRNAME = "campaigns"
 # --stage default: read what the run recorded in the sidecar instead of guessing.
 STAGE_AUTO = "auto"
 
-# BindCraft2's multi-target packing (campaign_output.py). The separator, and the two
-# columns that say what the packed positions mean.
-TARGET_VALUE_SEPARATOR = ";"
-TARGET_NAME_COLUMN = "targets"
-TARGET_WEIGHT_COLUMN = "target_weights"
+# BindCraft2's multi-target row format (campaign_output.py at v1.0.3):
+# TARGET_VALUE_SEPARATOR / TARGET_NAME_COLUMN / TARGET_WEIGHT_COLUMN. Both key columns
+# are written ONLY when the campaign prepared two or more target states, so their
+# presence is itself the single/multi discriminator.
+TARGET_SEP = ";"
+TARGETS_COL = "targets"
+TARGET_WEIGHTS_COL = "target_weights"
 
-# Suffix joining a metric (or a path) to the target it was measured against. Two
-# underscores so it cannot be confused with BindCraft2's own single-underscore names
-# (`i_pTM_detarget` is one metric; `i_pTM__hPD1` is one metric on one target).
-TARGET_COLUMN_SEP = "__"
+# The infix an off-target's columns carry. Must match OFF_TARGET_PREFIX in
+# run_bindcraft2.py, which refuses a target whose own name starts with it.
+OFF_TARGET_PREFIX = "off_"
 
-# Where unarchived trajectory structures are staged, under the collect out_dir. The
-# campaign folder itself is never written to.
-UNARCHIVED_DIRNAME = ".unarchived"
+# Columns that hold a `;` for reasons of their own and are NOT per-target readings.
+# `Timing` is the dangerous one: `timing_stamp` joins `worker=0;start=...;design=...`
+# with the same separator, so on a three-target campaign it would split cleanly into
+# three plausible-looking columns of nonsense. The rest are upstream's own
+# TRAILING_METADATA_COLUMNS / SEQUENCE_COLUMNS / TEXT_COLUMNS, which `target_ordered_row`
+# leaves in the shared part of the row.
+NEVER_SPLIT = frozenset(
+    {
+        "Timing",
+        "failed_filters",
+        "hash",
+        "phase",
+        "round",
+        "terminated",
+        "autotuned",
+        "rank",
+        "design",
+        "trajectory",
+        "length",
+        "outcome",
+        "Binder_Sequence",
+        "Interface_Binder_Residues",
+        "Interface_Target_Residues",
+        "settings_core",
+        "settings_modality",
+        "settings_property",
+        "settings_target",
+        "settings_overrides",
+        TARGETS_COL,
+        TARGET_WEIGHTS_COL,
+    }
+)
+
+# BindCraft2 stamps accepted structures with a `_bindcraft` mmCIF category; the two
+# span fields below are written against the letters of the OUTPUT file, so they name
+# the binder chain as a reader will see it. See campaign_output.designed_span_stamp.
+_STAMP_SPANS = re.compile(
+    r"^_bindcraft\.(?:redesigned_residues|paratope_residues)\s+(\S+)\s*$", re.MULTILINE
+)
+_SPAN_CHAIN = re.compile(r"([A-Za-z])\d")
 
 
-def _flat_structure(search_dir: Path, design: str) -> Path | None:
-    """``<search_dir>/<design>.cif``, the un-suffixed single-target form."""
-    exact = search_dir / f"{design}.cif"
-    return exact if exact.is_file() else None
+class TargetParseError(ValueError):
+    """A multi-target row this collector refuses to guess at. Becomes an error status
+    on that design's row rather than a best-effort parse."""
 
 
-def _target_structure(search_dir: Path, design: str, target: str) -> Path | None:
-    """``<search_dir>/<design>_<target>.cif``, as a multi-target campaign writes."""
-    path = search_dir / f"{design}_{target}.cif"
-    return path if path.is_file() else None
+class TargetRef(NamedTuple):
+    """One target of a multi-target campaign, in the CSV's own order.
 
-
-def _monomer_structure(search_dir: Path, design: str) -> Path | None:
-    """The free binder, re-predicted alone (``save_binder_monomers``)."""
-    path = search_dir / f"{design}_monomer.cif"
-    return path if path.is_file() else None
-
-
-def _any_structure(search_dir: Path, design: str) -> Path | None:
-    """Last resort: any complex for this design, monomers excluded.
-
-    Only reached when neither the plain nor the per-target name matched, which means
-    BindCraft2 named the file in a way this collector does not know about. Returning
-    something beats dropping the design, but the caller says so in the row's status.
+    ``off`` follows upstream exactly: ``resolve_prepared_states`` forces a detarget's
+    weight negative, so a negative weight in ``target_weights`` IS a detarget. A weight
+    of exactly 0 is an on-target that contributes nothing to the loss.
     """
-    matches = sorted(
-        p for p in search_dir.glob(f"{design}*.cif") if "_monomer" not in p.name
-    )
-    return matches[0] if matches else None
+
+    name: str
+    weight: float
+    off: bool
+
+    @property
+    def label(self) -> str:
+        """The column-name fragment: ``off_<name>`` for a detarget, ``<name>`` else."""
+        return f"{OFF_TARGET_PREFIX}{self.name}" if self.off else self.name
+
+
+def parse_target_order(row: pd.Series) -> list[TargetRef]:
+    """The row's targets, in its own order, or ``[]`` for a single-target campaign.
+
+    The row is the key, not the run's flags and not the files on disk -- upstream can
+    legitimately prepare states the submit never named (a FASTA target cropped into
+    ``<name>_epitope_<i>``), and the ``;`` cells are ordered to match this list.
+    """
+    if TARGETS_COL not in row.index:
+        return []
+    raw_names = _cell(row, TARGETS_COL)
+    if not raw_names:
+        return []
+    names = [n for n in raw_names.split(TARGET_SEP) if n]
+    if len(names) < 2:
+        return []
+    raw_weights = _cell(row, TARGET_WEIGHTS_COL)
+    weights = [w for w in raw_weights.split(TARGET_SEP) if w != ""] if raw_weights else []
+    if len(weights) != len(names):
+        raise TargetParseError(
+            f"'{TARGETS_COL}' names {len(names)} target(s) ({raw_names!r}) but "
+            f"'{TARGET_WEIGHTS_COL}' holds {len(weights)} weight(s) ({raw_weights!r}); "
+            f"without the weights an on-target cannot be told from a detarget"
+        )
+    try:
+        parsed = [float(w) for w in weights]
+    except ValueError as e:
+        raise TargetParseError(
+            f"'{TARGET_WEIGHTS_COL}' {raw_weights!r} is not a list of numbers ({e})"
+        ) from e
+    return [TargetRef(n, w, w < 0) for n, w in zip(names, parsed)]
+
+
+def _cell(row: pd.Series, col: str) -> str:
+    """A CSV cell as a string, with an absent column or a NaN/None read as ''."""
+    if col not in row.index:
+        return ""
+    value = row[col]
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except (TypeError, ValueError):  # array-like: not an NA scalar
+        pass
+    return str(value)
+
+
+def split_target_cell(col: str, value: Any, n_targets: int) -> list[Any] | None:
+    """One CSV cell split into its per-target readings, or ``None`` if it is shared.
+
+    Returns a list of length ``n_targets`` whose empty positions are ``pd.NA`` -- an
+    unmeasured reading, **not** zero (upstream's own docs say so, and a 0 i_pTM reads
+    as "does not bind" rather than "was not measured").
+
+    Raises TargetParseError when a cell that must be per-target has the wrong number of
+    values: ``target_ordered_row`` always joins over *every* target name, so a mismatch
+    means the row and its ``targets`` cell disagree, and there is no safe way to say
+    which value belongs to which target.
+    """
+    if col in NEVER_SPLIT or not isinstance(value, str) or TARGET_SEP not in value:
+        return None
+    parts = value.split(TARGET_SEP)
+    if len(parts) != n_targets:
+        raise TargetParseError(
+            f"column {col!r} holds {len(parts)} ';'-separated value(s) ({value!r}) for "
+            f"{n_targets} target(s)"
+        )
+    return [_number_or_na(p) for p in parts]
+
+
+def _number_or_na(part: str) -> Any:
+    """A per-target reading: a float when it is one, the raw text when it is not, and
+    ``pd.NA`` for an empty position (never 0.0)."""
+    text = part.strip()
+    if not text:
+        return pd.NA
+    try:
+        return float(text)
+    except ValueError:
+        return text
+
+
+def _unambiguous_structure(search_dir: Path, base: str) -> Path | None:
+    """``<search_dir>/<base>.cif`` -- the exact name and nothing else.
+
+    A single-target campaign writes no suffix at all (``accepted_state_suffixes``
+    returns ``''`` below two prepared states), so the exact name is the only correct
+    one. An earlier version of this collector fell back to ``glob(f'{base}*.cif')`` and
+    took the first hit, which silently attached ``<design>_seq10``'s structure to
+    ``<design>_seq1`` whenever the latter's own file was missing, and attached an
+    arbitrary target's complex in a multi-target campaign. There is no safe glob here:
+    a design with no file of its own has no structure.
+    """
+    exact = search_dir / f"{base}.cif"
+    return exact if exact.is_file() else None
 
 
 class Stage(NamedTuple):
@@ -169,40 +292,31 @@ class Stage(NamedTuple):
 
     folder: str  # under project_folder
     table: str  # its CSV, inside that folder
-    # (stage_dir, design) -> the dir holding that design's structures, or None
-    search: Callable[[Path, str], Path | None]
-    # the structure filename stem, which for a trajectory is not just the design
-    stem: Callable[[str], str]
-
-
-def _ranked_dir(stage_dir: Path, design: str) -> Path | None:
-    return stage_dir if stage_dir.is_dir() else None
-
-
-def _refolded_dir(stage_dir: Path, design: str) -> Path | None:
-    complexes = stage_dir / "Complexes"
-    return complexes if complexes.is_dir() else None
-
-
-def _trajectory_dir(stage_dir: Path, design: str) -> Path | None:
-    """``1_Trajectories/<design>/`` -- a per-design subfolder, unlike the two later
-    stages. When ``archive_trajectories`` packed it into ``<design>.zip`` the folder
-    is gone and the structures live inside the archive; see _unarchived_dir."""
-    design_dir = stage_dir / design
-    return design_dir if design_dir.is_dir() else None
+    search: Callable[[Path, str], Path]  # (stage_dir, design) -> structure folder
+    base: Callable[[str], str]  # design -> filename stem
 
 
 STAGES: dict[str, Stage] = {
+    # 1_Trajectories keeps a folder per design, and the filename carries the design
+    # name twice (campaign_output.trajectory_output_path prefixes it).
     "trajectories": Stage(
         "1_Trajectories",
         "!_Trajectories.csv",
-        _trajectory_dir,
+        lambda stage_dir, design: stage_dir / design,
         lambda design: f"{design}_trajectory",
     ),
     "refolded": Stage(
-        "2_Refolded", "!_Refolded.csv", _refolded_dir, lambda design: design
+        "2_Refolded",
+        "!_Refolded.csv",
+        lambda stage_dir, _design: stage_dir / "Complexes",
+        lambda design: design,
     ),
-    "ranked": Stage("3_Ranked", "!_Ranked.csv", _ranked_dir, lambda design: design),
+    "ranked": Stage(
+        "3_Ranked",
+        "!_Ranked.csv",
+        lambda stage_dir, _design: stage_dir,
+        lambda design: design,
+    ),
 }
 
 # The column carrying the design's identity, and the one carrying its sequence.
@@ -210,13 +324,6 @@ DESIGN_COL = "design"
 SEQUENCE_COL = "Binder_Sequence"
 # 1_Trajectories only: the stage the attempt stopped at, blank when it completed.
 TERMINATED_COL = "terminated"
-
-# Column prefixes always collected whatever --metrics says: user metadata supplied
-# with `--metadata` (meta_*), and the record of which presets actually ran
-# (settings_core / settings_modality / settings_property / settings_target /
-# settings_overrides). Provenance is cheap and a campaign cannot be re-read without
-# it.
-ALWAYS_PREFIXES = ("meta_", "settings_")
 
 # Collected by default: the metrics a binder campaign is actually read on. Everything
 # else in the CSV is reachable with --metrics or --all-metrics rather than being
@@ -229,33 +336,15 @@ CORE_METRICS = (
     "pLDDT",
     "pTM",
     "Unbound_Binder_pLDDT",
-    "Target_pLDDT",
     # interface
     "Interface_Residues",
     "Interface_BuriedArea",
     "Hotspot_Contact_Fraction",
-    "Coldspot_Contact_Fraction",
-    "Interface_Binder_Residues",
-    "Interface_Target_Residues",
-    # detargeting: only present when the campaign carried an off-target, and the
-    # whole point of one. Interface confidence alone does not decide avoidance --
-    # a peptide can read 0.27 i_pTM with its whole face on the off-target -- so the
-    # residue count is collected beside it.
-    "i_pTM_detarget",
-    "i_pAE_detarget",
-    "Interface_Residues_detarget",
-    # geometry sanity
-    "Backbone_Clashes",
-    "All_Atom_Clashes",
-    "Binder_Chain_Breaks",
     # developability
     "Surface_Hydrophobicity",
     "Binder_Length",
     "Binder_Net_Charge",
     "Binder_Free_Cysteines",
-    # multi-target bookkeeping: what the packed cells mean, and in what order.
-    TARGET_NAME_COLUMN,
-    TARGET_WEIGHT_COLUMN,
     # provenance / triage. Which of these exist depends on the stage: `outcome` and
     # `failed_filters` on refolded, `rank` on ranked, `terminated` and `autotuned`
     # on trajectories. Absent ones are simply not collected.
@@ -269,53 +358,11 @@ CORE_METRICS = (
     "length",
 )
 
-# Direction of the metrics this collector will summarise across targets: True when a
-# larger reading is the better one. A metric outside this map still gets its
-# per-target split; it just gets no __mean/__worst/__best/__selectivity, because
-# those three words are meaningless without a direction. Read off
-# docs/source/outputs.md (BindCraft2 v1.0.3).
-METRIC_DIRECTION: dict[str, bool] = {
-    # higher is better
-    "i_pDAE": True,
-    "i_pTM": True,
-    "pTM": True,
-    "pLDDT": True,
-    "Unbound_Binder_pLDDT": True,
-    "Target_pLDDT": True,
-    "SS_pLDDT": True,
-    "Interface_Residues": True,
-    "Interface_BuriedArea": True,
-    "Hotspot_Contact_Fraction": True,
-    "Epitope_Residues_Contacted": True,
-    "Receptor_Chains_Contacted": True,
-    "Framework_Packing_Fraction": True,
-    "Domain_Separation_Ratio": True,
-    "Scaffold_Sequence_Retained_Fraction": True,
-    # lower is better
-    "i_pAE": False,
-    "Coldspot_Contact_Fraction": False,
-    "Off_Paratope_Contact_Fraction": False,
-    "Off_Epitope_Contact_Fraction": False,
-    "Surface_Hydrophobicity": False,
-    "Backbone_Clashes": False,
-    "All_Atom_Clashes": False,
-    "Binder_Chain_Breaks": False,
-    "Binder_Free_Cysteines": False,
-    "MHC_Anchor_Score": False,
-    "Protease_Site_Score": False,
-    "Exposed_Loop_Fraction": False,
-    "Terminus_Exposure": False,
-    "Interdomain_Contact_Fraction": False,
-    "Scaffold_Framework_RMSD": False,
-    "Oligomer_Symmetry_RMSD": False,
-}
-
 
 class BindCraft2CollectArgs(CollectArgs):
     stage: str
     metrics: str
     all_metrics: bool
-    no_split_targets: bool
 
 
 def add_collect_bindcraft2_args(parser: ArgumentParser) -> None:
@@ -328,12 +375,8 @@ def add_collect_bindcraft2_args(parser: ArgumentParser) -> None:
         "otherwise. 'trajectories' takes the hallucinated backbones before any "
         "sequence redesign; 'refolded' takes every scored candidate, rejects "
         "included, with its `outcome` and `failed_filters`; 'ranked' takes only what "
-        "the campaign accepted. NOTE -l/--dir-label does NOT separate two stages into "
-        "separate columns: it only selects a leaf dir some run already created, and "
-        "both stages write the same <leaf>_* column names. Collecting a second stage "
-        "into the SAME leaf ADDS ROWS (stage row keys differ), it does not add "
-        "columns. For two stages side by side, give the second one its own leaf via a "
-        "--reuse-campaigns run with a different -l.",
+        "the campaign accepted. Override with -l/--dir-label to keep two stages of "
+        "one run in separate columns.",
     )
     parser.add_argument(
         "--metrics",
@@ -349,16 +392,7 @@ def add_collect_bindcraft2_args(parser: ArgumentParser) -> None:
         action="store_true",
         help="Collect every column in the stage's CSV instead of the core set. "
         "Wide: BindCraft2 writes ~60 measurements per design, and a multi-target "
-        "campaign then splits each of them per target as well.",
-    )
-    parser.add_argument(
-        "--no-split-targets",
-        action="store_true",
-        help="Keep BindCraft2's semicolon-packed multi-target cells as they are, "
-        "without adding the per-target and summary columns. The packed cell is a "
-        "string, so -f cannot threshold it -- only pass this if the extra columns "
-        "are in the way. No effect on a single-target campaign, which BindCraft2 "
-        "never packs.",
+        "campaign multiplies the per-target ones by its target count.",
     )
 
 
@@ -419,209 +453,62 @@ def _read_stage_table(campaign_dir: Path, stage: str) -> tuple[pd.DataFrame, Pat
         return pd.DataFrame(), stage_dir
 
 
-def _packed(value: Any) -> list[str]:
-    """Split one of BindCraft2's packed multi-target cells into its positions."""
-    if value is None or (isinstance(value, float) and pd.isna(value)):
-        return []
-    return str(value).split(TARGET_VALUE_SEPARATOR)
+def binder_chain_letters(cif: Path, pdb: Path | None) -> tuple[Any, str]:
+    """The chain letter(s) the binder carries in the written complex, and where from.
 
+    Upstream writes chains sorted on ``(is_binder_chain(name), name)``
+    (``protein.written_chains``), so the **binder is last** -- ``B`` behind a
+    single-chain target, ``C`` behind a two-chain one. The ``binder_chain`` setting
+    (default ``null`` -> ``"binder"``) is the campaign's internal name and is NOT that
+    letter; reading it instead is how a downstream `--chains-to-design` ends up
+    redesigning the target.
 
-def row_targets(row: pd.Series) -> list[tuple[str, float]]:
-    """``[(target name, weight), …]`` for a row, in BindCraft2's own packed order.
+    Two sources, best first:
 
-    Empty for a single-target campaign: BindCraft2 writes neither column then
-    (``target_ordered_row`` returns the row untouched below two targets), and there
-    is nothing to split. A row whose names and weights disagree in length is treated
-    as unusable rather than zipped into a wrong mapping.
+    * ``stamp`` -- ``_bindcraft.redesigned_residues`` / ``paratope_residues`` in the
+      accepted mmCIF, whose spans upstream writes against the output letters. Exact,
+      and correct for an oligomeric binder (several letters).
+    * ``last_chain`` -- the last chain in the written structure. Right for a single
+      binder chain, and an UNDER-count when ``copies > 1``.
+
+    Returns ``(pd.NA, "none")`` when neither works, never a guess.
     """
-    if TARGET_NAME_COLUMN not in row.index:
-        return []
-    names = [name for name in _packed(row.get(TARGET_NAME_COLUMN)) if name]
-    weights = _packed(row.get(TARGET_WEIGHT_COLUMN))
-    if not names:
-        return []
-    if len(weights) != len(names):
-        # Weights missing or mismatched: keep the order, assume every target binds.
-        return [(name, 1.0) for name in names]
-    paired = []
-    for name, weight in zip(names, weights):
-        try:
-            paired.append((name, float(weight)))
-        except ValueError:
-            paired.append((name, 1.0))
-    return paired
-
-
-def _number(value: str) -> float | str:
-    """A packed position as a number when it is one, else verbatim (it may be a
-    residue list, an empty position, or a filter name)."""
-    text = value.strip()
-    if not text:
-        return ""
     try:
-        return float(text)
-    except ValueError:
-        return text
+        text = cif.read_text(errors="replace")
+    except OSError:
+        text = ""
+    letters = {
+        match.group(1)
+        for value in _STAMP_SPANS.findall(text)
+        for span in value.strip("'\"").split(",")
+        for match in [_SPAN_CHAIN.match(span)]
+        if match
+    }
+    if letters:
+        return "".join(sorted(letters)), "stamp"
+    last = _last_pdb_chain(pdb) if pdb is not None else None
+    return (last, "last_chain") if last else (pd.NA, "none")
 
 
-def _summaries(
-    metric: str, readings: dict[str, float], weights: dict[str, float]
-) -> dict[str, float]:
-    """Across-target summary columns for one metric, binding targets only.
-
-    Mirrors ``campaign_output.on_target_mean``: an off-target reading is gated at
-    acceptance, and averaging it in would reward binding the thing the campaign is
-    trying to avoid. ``__selectivity`` is the one column that deliberately compares
-    the two groups -- the weakest binding target against the strongest off-target, in
-    the metric's own direction, so a positive margin always favours the intended
-    distinction.
-    """
-    higher = METRIC_DIRECTION.get(metric)
-    if higher is None:
-        return {}
-    binding = [v for name, v in readings.items() if weights.get(name, 1.0) > 0]
-    against = [v for name, v in readings.items() if weights.get(name, 1.0) < 0]
-    if len(binding) < 2 and not against:
-        return {}
-    out: dict[str, float] = {}
-    if binding:
-        out[f"{metric}{TARGET_COLUMN_SEP}mean"] = sum(binding) / len(binding)
-        out[f"{metric}{TARGET_COLUMN_SEP}worst"] = min(binding) if higher else max(binding)
-        out[f"{metric}{TARGET_COLUMN_SEP}best"] = max(binding) if higher else min(binding)
-        out[f"{metric}{TARGET_COLUMN_SEP}spread"] = max(binding) - min(binding)
-    if binding and against:
-        out[f"{metric}{TARGET_COLUMN_SEP}selectivity"] = (
-            min(binding) - max(against) if higher else min(against) - max(binding)
-        )
-    return out
-
-
-def split_target_columns(
-    data: dict[str, Any], targets: list[tuple[str, float]]
-) -> dict[str, Any]:
-    """Per-target and summary columns derived from the packed cells in ``data``.
-
-    A cell is only split when it holds exactly as many positions as the row has
-    targets -- the same guard ``campaign_output.per_target_readings`` applies, and
-    the thing that stops a residue list that happens to contain a semicolon from
-    being mapped onto the wrong targets.
-    """
-    names = [name for name, _ in targets]
-    weights = dict(targets)
-    derived: dict[str, Any] = {}
-    for column, value in data.items():
-        if column in (TARGET_NAME_COLUMN, TARGET_WEIGHT_COLUMN):
-            continue
-        positions = _packed(value)
-        if len(positions) != len(names) or len(names) < 2:
-            continue
-        readings: dict[str, float] = {}
-        for name, position in zip(names, positions):
-            parsed = _number(position)
-            derived[f"{column}{TARGET_COLUMN_SEP}{name}"] = parsed
-            if isinstance(parsed, float):
-                readings[name] = parsed
-        if len(readings) == len(names):
-            derived.update(_summaries(column, readings, weights))
-    return derived
-
-
-def _safe_members(archive: zipfile.ZipFile, design: str) -> list[str]:
-    """Members of a trajectory archive belonging to ``design``, path-traversal safe.
-
-    ``archive_trajectory_folder`` writes members relative to ``1_Trajectories``, so
-    they all start ``<design>/``. Anything absolute, escaping upward, or outside that
-    prefix is not ours and is skipped.
-    """
-    prefix = f"{design}/"
-    members = []
-    for member in archive.namelist():
-        if member.startswith(("/", "\\")) or ".." in Path(member).parts:
-            continue
-        if member.startswith(prefix):
-            members.append(member)
-    return members
-
-
-def unarchived_dir(stage_dir: Path, design: str, dest_root: Path) -> Path | None:
-    """Restore one archived trajectory folder into ``dest_root`` and return it.
-
-    ``archive_trajectories`` zips each ``1_Trajectories/<design>/`` into
-    ``<design>.zip`` and deletes the folder, which used to leave this collector
-    reporting a campaign's worth of designs as having no structure. The archive is a
-    plain deflate zip, so it is read with the stdlib here rather than shelling out to
-    `bindcraft unarchive` -- which is not installed in the workstation, and would
-    rewrite someone's campaign folder. Nothing in the campaign is modified.
-    """
-    archive_path = stage_dir / f"{design}.zip"
-    if not archive_path.is_file():
-        return None
-    destination = dest_root / design
-    if destination.is_dir():
-        return destination
+def _last_pdb_chain(pdb: Path) -> str | None:
+    """The chain id of the last ATOM/HETATM record of a PDB file."""
     try:
-        with zipfile.ZipFile(archive_path) as archive:
-            members = _safe_members(archive, design)
-            if not members:
-                return None
-            dest_root.mkdir(parents=True, exist_ok=True)
-            archive.extractall(dest_root, members=members)
-    except (OSError, zipfile.BadZipFile) as e:
-        print(f"  unreadable archive {archive_path}: {e}")
+        chains = [
+            line[21]
+            for line in pdb.read_text(errors="replace").splitlines()
+            if line.startswith(("ATOM  ", "HETATM")) and len(line) > 21
+        ]
+    except OSError:
         return None
-    return destination if destination.is_dir() else None
+    return chains[-1].strip() or None if chains else None
 
 
-class Structures(NamedTuple):
-    """The structure files one design produced at one stage."""
+def _shared_row_data(row: pd.Series, columns: list[str]) -> dict[str, Any]:
+    """The columns that are one value per design however many targets there are.
 
-    primary: Path | None  # the complex `<leaf>_path` points at
-    per_target: dict[str, Path]  # target name -> its own complex
-    monomer: Path | None  # the free binder, when save_binder_monomers was on
-    fell_back: bool  # primary found by glob rather than by name
-
-
-def find_structures(
-    search_dir: Path, stem: str, targets: list[tuple[str, float]]
-) -> Structures:
-    """Locate every structure this design wrote, by name rather than by glob order.
-
-    Single target: ``<stem>.cif``. Several: one ``<stem>_<target>.cif`` per target,
-    and the primary is the highest-weight BINDING target -- the complex a downstream
-    predictor or interface tool should be pointed at. ``targets`` arrives already
-    ordered by ``(-weight, name)``, so the first binding entry is that one.
+    Values are passed through exactly as pandas read them -- this is the single-target
+    collector's behaviour, unchanged.
     """
-    per_target: dict[str, Path] = {}
-    for name, _ in targets:
-        found = _target_structure(search_dir, stem, name)
-        if found is not None:
-            per_target[name] = found
-
-    primary: Path | None = None
-    for name, weight in targets:
-        if weight > 0 and name in per_target:
-            primary = per_target[name]
-            break
-    if primary is None and per_target:
-        primary = next(iter(per_target.values()))
-
-    fell_back = False
-    if primary is None:
-        primary = _flat_structure(search_dir, stem)
-    if primary is None:
-        primary = _any_structure(search_dir, stem)
-        fell_back = primary is not None
-
-    return Structures(
-        primary=primary,
-        per_target=per_target,
-        monomer=_monomer_structure(search_dir, stem),
-        fell_back=fell_back,
-    )
-
-
-def _row_data(row: pd.Series, columns: list[str]) -> dict[str, Any]:
-    """The tool-specific columns for one design, as bare names (the driver prefixes)."""
     data: dict[str, Any] = {}
     if SEQUENCE_COL in row.index:
         # Named `sequence` like every other sequence-producing tool here, so a
@@ -634,21 +521,6 @@ def _row_data(row: pd.Series, columns: list[str]) -> dict[str, Any]:
     return data
 
 
-def _selected_columns(df: pd.DataFrame, ctx: CollectCtx[BindCraft2CollectArgs]) -> list[str]:
-    """Which CSV columns to carry into the table."""
-    extra = [m.strip() for m in ctx.args.metrics.split(",") if m.strip()]
-    if ctx.args.all_metrics:
-        chosen = [c for c in df.columns if c not in (DESIGN_COL, SEQUENCE_COL)]
-    else:
-        chosen = [c for c in (*CORE_METRICS, *extra) if c in df.columns]
-    always = [
-        c
-        for c in df.columns
-        if c.startswith(ALWAYS_PREFIXES) and c not in chosen
-    ]
-    return chosen + always
-
-
 def collect_bindcraft2(ctx: CollectCtx[BindCraft2CollectArgs]) -> CollectEach:
     """Per-campaign BindCraft2 collector. A create tool: the framework iterates the
     ready parents (table rows, or the root design groups the run recorded) and this
@@ -656,18 +528,12 @@ def collect_bindcraft2(ctx: CollectCtx[BindCraft2CollectArgs]) -> CollectEach:
     lineage. A campaign with no results yields no rows. The framework stamps
     status/path/parent_name from each Collected."""
     meta = _run_meta(ctx.out_dir)
-    if meta.get("weights_only"):
-        print(
-            "This run only fetched the AlphaFold parameters into the cache volume; "
-            "it ran no campaign, so there is nothing to collect."
-        )
-        return lambda d: ()
-
-    stage = resolve_stage(ctx, meta)
-    stage_spec = STAGES[stage]
+    stage_name = resolve_stage(ctx, meta)
+    stage = STAGES[stage_name]
     campaigns_root = resolve_campaigns_root(ctx, meta)
     run_dir = ctx.args.run_dir
-    unarchive_root = ctx.out_dir / UNARCHIVED_DIRNAME
+    extra_metrics = [m.strip() for m in ctx.args.metrics.split(",") if m.strip()]
+    submitted = list(meta.get("submitted_targets") or [])
     how = "from --stage" if ctx.args.stage != STAGE_AUTO else "per the run's sidecar"
     print(f"Collecting '{stage_name}' designs ({how}) from campaigns in {campaigns_root}")
     if submitted:
@@ -693,85 +559,85 @@ def collect_bindcraft2(ctx: CollectCtx[BindCraft2CollectArgs]) -> CollectEach:
             print(f"{d.name}: no '{stage_name}' designs")
             return
 
-        columns = _selected_columns(df, ctx)
+        # archive_trajectories packs each design folder into <design>.zip, and the
+        # structures then exist only inside it. Say that, rather than reporting a
+        # campaign's worth of designs as having no structure.
+        if stage_name == "trajectories" and any(stage_dir.glob("*.zip")):
+            print(
+                f"{d.name}: {stage_dir} holds archived trajectories — run "
+                f"`bindcraft unarchive {campaign_dir}` before collecting"
+            )
+
+        columns = (
+            [
+                c
+                for c in df.columns
+                if c not in (DESIGN_COL, SEQUENCE_COL, TARGETS_COL, TARGET_WEIGHTS_COL)
+            ]
+            if ctx.args.all_metrics
+            else [c for c in (*CORE_METRICS, *extra_metrics) if c in df.columns]
+        )
 
         # Sorted by identity, not by rank: !_Ranked.csv is re-sorted after every
         # acceptance, so collecting in file order would be collecting in an order
         # that changes under a resumed campaign.
         n = 0
-        restored = 0
         ordered = df.sort_values(DESIGN_COL).set_index(DESIGN_COL)
         for design, row in ordered.iterrows():
             design = str(design)
-            search_dir = stage_spec.search(stage_dir, design)
-            if search_dir is None and stage == "trajectories":
-                # archive_trajectories packed the folder away; read it out of the zip
-                # instead of reporting the design as structureless.
-                search_dir = unarchived_dir(
-                    stage_dir, design, unarchive_root / d.name
+            row_name = design if design.startswith(d.name) else f"{d.name}_{design}"
+            search_dir, base = stage.search(stage_dir, design), stage.base(design)
+
+            try:
+                targets = parse_target_order(row)
+            except TargetParseError as e:
+                print(f"{d.name}: {design} {e}")
+                yield Collected(
+                    name=row_name,
+                    parent=d.name,
+                    path="",
+                    status=f"error: {e}",
+                    data=_shared_row_data(row, columns),
                 )
-                restored += search_dir is not None
-            if search_dir is None:
-                print(f"{d.name}: {design} has no structure dir under {stage_dir}")
+                n += 1
                 continue
 
-            targets = row_targets(row)
-            stem = stage_spec.stem(design)
-            found = find_structures(search_dir, stem, targets)
-            if found.primary is None:
-                print(f"{d.name}: {design} has no structure in {search_dir}, skipping")
-                continue
+            if targets:
+                if submitted and set(submitted) - {t.name for t in targets}:
+                    missing = sorted(set(submitted) - {t.name for t in targets})
+                    if d.name not in warned_mismatch:
+                        warned_mismatch.add(d.name)
+                        print(
+                            f"{d.name}: the CSV's targets do not include {missing} "
+                            f"which the run submitted; splitting on the CSV's own "
+                            f"`{TARGETS_COL}` cell, which is what the values are "
+                            f"ordered by"
+                        )
+                emitted = _multi_target_row(
+                    row, columns, targets, search_dir, base, as_pdb
+                )
+            else:
+                emitted = _single_target_row(row, columns, search_dir, base, as_pdb)
 
-            data = _row_data(row, columns)
-            if targets and not ctx.args.no_split_targets:
-                data.update(split_target_columns(data, targets))
-            data["cif_path"] = str(found.primary)
-            if found.monomer is not None:
-                data["monomer_path"] = str(found.monomer)
-            if stage == "trajectories":
+            if emitted is None:
+                print(
+                    f"{d.name}: {design} has no structure under {search_dir}, skipping"
+                )
+                continue
+            data, path, status = emitted
+            if stage_name == "trajectories":
                 # `terminated` is blank when the attempt ran to completion, so its
                 # NA means success -- the opposite of NA everywhere else in a
                 # prosapia table. Carry the polarity explicitly so a --filter reads
                 # `bindcraft2_completed == True` instead of testing for a blank.
-                stopped_at = row.get(TERMINATED_COL)
-                data["completed"] = bool(
-                    pd.isna(stopped_at) or not str(stopped_at).strip()
-                )
-
-            # A design whose mmCIF won't parse still has its metrics, and one bad
-            # file among hundreds shouldn't abort the collect: keep the row, point
-            # it at the mmCIF, and say so in its status.
-            try:
-                path, status = ensure_pdb(found.primary, run_dir), "OK"
-            except (ValueError, RuntimeError, OSError) as e:
-                print(f"{d.name}: {design} mmCIF unreadable ({e})")
-                path, status = found.primary, f"error: unreadable mmCIF ({type(e).__name__})"
-
-            # Every other target's complex, beside the primary one. Converted too:
-            # a multi-target campaign is read by comparing the poses against each
-            # other, and a half-converted set makes that a two-step job.
-            for target, cif in found.per_target.items():
-                if cif == found.primary:
-                    continue
-                try:
-                    data[f"path{TARGET_COLUMN_SEP}{target}"] = str(
-                        ensure_pdb(cif, run_dir)
-                    )
-                except (ValueError, RuntimeError, OSError):
-                    data[f"path{TARGET_COLUMN_SEP}{target}"] = str(cif)
-
-            if found.fell_back and status == "OK":
-                # The name did not match either convention, so which target this
-                # structure belongs to is a guess. Say so in the row rather than
-                # letting it pass as a clean result.
-                status = "OK: structure matched by glob, not by target name"
-
+                data["completed"] = not _cell(row, TERMINATED_COL).strip()
+            if status != "OK":
+                print(f"{d.name}: {design} {status}")
             yield Collected(
                 name=row_name, parent=d.name, path=path, status=status, data=data
             )
             n += 1
-        note = f", {restored} unarchived" if restored else ""
-        print(f"{d.name}: OK ({n} {stage} design(s){note})")
+        print(f"{d.name}: OK ({n} {stage_name} design(s))")
 
     return one
 
