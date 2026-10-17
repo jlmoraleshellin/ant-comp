@@ -191,13 +191,7 @@ Non-negotiables, each learned the hard way:
   required on `srun`/`salloc` just as on `sbatch`, and `bash -lc` is what makes `module`
   available. Measured: a venv build on the login node wedged twice, and took minutes on a
   compute node. Scheduler queries (`squeue`/`sacct`/`sinfo`) are fine on the login node.
-- **No `uv` on vib.** The venv is built by `bash scripts/vib.sh bootstrap` from the
-  `Miniconda3` module's Python (3.12) with stdlib `venv`/`pip`, pinned to the prosapia
-  commit read from `uv.lock`. On this cluster `uv` exists only under one user's home, so it
-  cannot be assumed. rsync never touches the venv, so after a pin bump the cluster silently
-  runs the old library until someone re-runs `bootstrap` — `vib.sh status` shows the
-  mismatch. If `uv.lock` points at the editable `../prosapia`, `bootstrap` stops and needs
-  `--commit <pushed sha>`.
+- **The venv is built with `uv`, from `module load uv`.** `bash scripts/vib.sh bootstrap` pushes `pyproject.toml` and `uv.lock` (per-run syncs do not carry them) and runs `uv sync --frozen` on a compute node, so vib installs the exact set Modal does and the prosapia pin is the commit in `uv.lock`. The module also brings the EasyBuild Python (3.13.5 when measured 2026-10-17), and the script sets `UV_PYTHON_PREFERENCE=only-system` so the venv links to that shared interpreter and not to a managed Python downloaded into one user's `$HOME`. A `uv` venv has no `pip`: read what is installed with `vib.sh status`, never `.venv/bin/pip`. rsync never touches the venv, so after a pin bump the cluster silently runs the old library until someone re-runs `bootstrap`; `vib.sh status` shows the mismatch. If `uv.lock` points at the editable `../prosapia`, the default `bootstrap` stops; `bootstrap --commit <pushed sha>` instead installs that commit with `uv pip install` (no lock, so transitive dependencies are not pinned).
 - **Commands always start in `$SAPIA_VIB_WORKSPACE`, and never `cd`.** `vib.sh exec`
   does the `cd` itself and refuses `cd`, `..`, `~`, absolute paths outside the workspace and
   an `rm` outside the workspace (an accident guard, not a sandbox; removals inside it are

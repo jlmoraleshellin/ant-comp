@@ -11,7 +11,8 @@
 # outside the workspace and an `rm` outside it. Code running inside an `srun` allocation is
 # still your own user. The hard limit is your Unix permissions on group storage.
 #
-# Needs locally: bash, ssh, rsync, timeout, python3 (guard only). Needs NO uv, here or on vib.
+# Needs locally: bash, ssh, rsync, timeout, python3 (guard only). No uv locally; `bootstrap`
+# builds the venv on vib with `module load uv`.
 
 set -u -o pipefail
 
@@ -45,8 +46,11 @@ usage: bash scripts/vib.sh <command> [args]
   check '<command>'    run the guard only; touches nothing
   init [--adopt]       create the workspace + its marker; --adopt for an existing one
   bootstrap [--commit SHA]
-                       init + sync + build the venv on a compute node (~5 min)
-  status               marker, venv, prosapia commit vs the pin, and `uv` (expected absent)
+                       init + sync + build the venv with `uv` on a compute node (~5 min).
+                       Default: `uv sync --frozen` from uv.lock, so vib runs the exact set Modal
+                       does. --commit SHA: install that pushed prosapia commit instead (needed
+                       while uv.lock points at the editable ../prosapia).
+  status               marker, venv, prosapia commit vs the pin, and `module load uv`
 
 Set VIB_PRINT=1 to print the ssh/rsync command instead of running it.
 Set VIB_DEBUG=1 on `sync` for rsync -vv --stats and ssh -v (long: redirect stderr to a file).
@@ -295,7 +299,7 @@ resolve_commit() {
 }
 
 cmd_bootstrap() {
-  local commit_arg="" commit script
+  local commit_arg="" commit script build
   while [ $# -gt 0 ]; do
     case $1 in
       --commit) commit_arg=${2:-}; shift 2 || die "--commit needs a sha" ;;
@@ -304,23 +308,39 @@ cmd_bootstrap() {
   done
   need_account
   commit=$(resolve_commit "$commit_arg") || exit 2
-  echo "prosapia pinned to ${commit:0:8}"
+  # `uv sync` reads pyproject.toml + uv.lock from the workspace. A per-run sync never needs
+  # them, so only bootstrap sends them. (--delete cannot touch a file path.)
+  local SYNC_PATHS=("${SYNC_PATHS[@]}")
+  if [ -z "$commit_arg" ]; then
+    [ -f pyproject.toml ] && [ -f uv.lock ] || die "pyproject.toml and uv.lock must both exist here: uv sync reads them"
+    SYNC_PATHS+=(pyproject.toml uv.lock)
+    echo "prosapia pinned to ${commit:0:8} (uv.lock)"
+    build='uv sync --frozen'
+  else
+    echo "prosapia pinned to ${commit:0:8} (--commit)"
+    build="uv venv --python '>=3.11' .venv
+uv pip install --python .venv/bin/python \"prosapia[modal] @ git+https://github.com/jlmoraleshellin/prosapia@$commit\""
+  fi
   echo "==> workspace + marker";   cmd_init   || exit $?
   echo "==> syncing the working tree"; cmd_sync || exit $?
-  echo "==> building the venv on a compute node (several minutes, no output until done)"
+  echo "==> building the venv on a compute node (several minutes)"
   IFS= read -r -d '' script <<'EOF' || true
 set -e
 cd @WS@
 test -f .sapia-workspace
-module load Miniconda3
-echo "building with $(python -V) on $(hostname)"
+module load uv
+# Take the interpreter from the EasyBuild Python that `module load uv` brings along. By default
+# uv prefers a managed Python, downloaded into $HOME, and the venv would then link into one
+# user's home directory.
+export UV_PYTHON_PREFERENCE=only-system
+# the uv cache lives in $HOME and the venv on group storage: copy, do not warn about hardlinks
+export UV_LINK_MODE=copy
+echo "building with $(uv --version), $(python3 -V) on $(hostname)"
 rm -rf .venv
-python -m venv .venv
-.venv/bin/pip install --quiet --upgrade pip setuptools wheel
-.venv/bin/pip install "prosapia[modal] @ git+https://github.com/jlmoraleshellin/prosapia@@COMMIT@"
+@BUILD@
 EOF
   script=${script//@WS@/$(q "$WS")}
-  script=${script//@COMMIT@/$commit}
+  script=${script//@BUILD@/$build}
   run_ssh 1800 "srun -A $(q "$ACCOUNT") -c 8 -t 2:0:0 --job-name=venv_bootstrap bash -lc $(q "$script")" || exit $?
   echo "==> verifying"
   remote "sapia run --help >/dev/null && echo 'sapia OK'" 120
@@ -333,12 +353,13 @@ cmd_status() {
 cd @WS@ || { echo "workspace: MISSING"; exit 0; }
 if [ -f .sapia-workspace ]; then echo "marker:    ok"; else echo "marker:    MISSING (sync will refuse)"; fi
 if [ -x .venv/bin/python ]; then
-  echo "venv:      $(.venv/bin/python -V 2>&1)"
-  echo "prosapia:  $(.venv/bin/pip freeze 2>/dev/null | grep -i '^prosapia' || echo 'not installed')"
+  echo "venv:      $(.venv/bin/python -V 2>&1) ($(readlink -f .venv/bin/python))"
+  # a uv venv has no pip: read the commit pip/uv recorded in the dist-info instead
+  echo "prosapia:  $(.venv/bin/python -I -c 'import importlib.metadata as m,json;d=m.distribution("prosapia");u=json.loads(d.read_text("direct_url.json") or "{}");v=u.get("vcs_info");print(u.get("url","?")+"@"+v["commit_id"] if v else "not a git install: "+d.version+" "+str(u))' 2>/dev/null || echo 'not installed')"
 else
   echo "venv:      MISSING"
 fi
-if command -v uv >/dev/null 2>&1; then echo "uv:        present at $(command -v uv) (this account's own install; nothing here uses it)"; else echo "uv:        absent (expected; nothing on vib needs it)"; fi
+if uvv=$(bash -lc 'module load uv >/dev/null 2>&1 && uv --version' 2>/dev/null); then echo "uv:        $uvv (module load uv)"; else echo "uv:        NOT available through 'module load uv': bootstrap cannot run"; fi
 EOF
   script=${script//@WS@/$(q "$WS")}
   out=$(run_ssh 60 "bash -c $(q "$script")") || exit $?
