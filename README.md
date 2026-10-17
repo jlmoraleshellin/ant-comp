@@ -50,13 +50,13 @@ SAPIA_VIB_WORKSPACE="/data/groups/csb/<...>/<you>/ant-comp"   # yours; anywhere 
 SAPIA_VIB_ACCOUNT="anastassia_vorobieva"                      # required on every job
 ```
 
-Then build the workspace — creates it, syncs this repo into it, and builds its venv from the `Miniconda3` module on a compute node:
+Then build the workspace — creates it, syncs this repo into it, and builds its venv on a compute node with the cluster's `uv` (`module load uv`, run by the script):
 
 ```bash
 bash scripts/vib.sh bootstrap    # ~5 min
 ```
 
-For vib alone you need only `bash`, `ssh`, `rsync`, `timeout` and `python3` on your machine — `uv` is needed for Modal, never for vib. Everything else about the vib connection is in [`docs/vib.md`](docs/vib.md).
+For vib alone you need only `bash`, `ssh`, `rsync`, `timeout` and `python3` on your machine — `uv` is needed on your machine for Modal, never for vib (the cluster's own `uv` builds the venv). Everything else about the vib connection is in [`docs/vib.md`](docs/vib.md).
 
 Auth is a short-lived SSH certificate via a Microsoft browser sign-in. When it lapses the next `ssh` opens a sign-in page and waits — so if Claude reports that ssh hung, that is your cue to sign in.
 

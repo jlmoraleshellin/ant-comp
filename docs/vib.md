@@ -20,8 +20,8 @@ vib-worker ---- bash scripts/vib.sh exec ---->   login node: squeue, sacct, sinf
 | `sync [--dry-run]` | pushes `tools/`, `activation/`, `utils/` and `.env` |
 | `check '<cmd>'` | runs the guard only |
 | `init [--adopt]` | creates the workspace and its `.sapia-workspace` marker; `--adopt` for an existing one |
-| `bootstrap [--commit SHA]` | init, sync, then builds the venv on a compute node |
-| `status` | marker, venv, prosapia commit against the pin, and whether `uv` exists on vib |
+| `bootstrap [--commit SHA]` | init, sync (plus `pyproject.toml` and `uv.lock`), then builds the venv with `uv` on a compute node (`rm -rf .venv` first, so run it only when no job of yours is in flight). Default is `uv sync --frozen` from `uv.lock`; `--commit SHA` installs that prosapia commit instead, which must be pushed |
+| `status` | marker, venv (and the interpreter it links to), prosapia commit against the pin, and whether `module load uv` works |
 
 `$SAPIA_VIB_WORKSPACE` and `$SAPIA_VIB_ACCOUNT` expand **on vib**, so write them in single quotes.
 
@@ -43,9 +43,11 @@ Both prosapia reads must reach the same file, which is why the venv lives **insi
 
 ## The venv, `uv`, and the pin
 
-- **Nothing on vib uses `uv`.** The venv is built by `bootstrap` from the `Miniconda3` module's Python with stdlib `venv` and `pip`. The only `uv` artefact is `uv.lock`, read locally for the prosapia commit. `status` prints whether `uv` exists there.
+- **`bootstrap` uses the cluster's `uv`**, loaded with `module load uv` inside the compute-node allocation (`bash -lc` is what makes `module` available). Default: `uv sync --frozen` from the `pyproject.toml` and `uv.lock` that `bootstrap` pushes, so the install matches Modal's. Nothing else uses `uv` on vib, and your machine still needs none for vib.
+- **The interpreter is the EasyBuild Python that `module load uv` brings along** (3.13.5 when measured 2026-10-17). `bootstrap` sets `UV_PYTHON_PREFERENCE=only-system`, because otherwise `uv` prefers a managed Python downloaded into `$HOME` and the venv would link into one user's home directory. The venv's `python` is a symlink into the module tree and runs with an empty environment, so tasks do not need the module loaded. `UV_LINK_MODE=copy` stops `uv` warning that its cache (in `$HOME`) and the venv (group storage) are on different filesystems.
+- **A `uv` venv has no `pip`.** `status` reads the installed prosapia commit from the package's `direct_url.json` instead of `pip freeze`.
 - rsync never touches the venv. After a pin change, re-run `bootstrap`; `status` shows a mismatch.
-- If `uv.lock` points at the editable `../prosapia` checkout, `bootstrap` stops. Pass `--commit <sha>` with a **pushed** commit.
+- If `uv.lock` points at the editable `../prosapia` checkout, the default `bootstrap` stops. Pass `--commit <sha>` with a **pushed** commit: that path runs `uv venv` and `uv pip install` of the commit, with no lock, so transitive dependencies are resolved fresh and can differ from Modal's.
 
 ## The shared activation scripts
 

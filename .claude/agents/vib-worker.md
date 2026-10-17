@@ -82,7 +82,7 @@ This is what makes vib feel like Modal: the user edits a tool or an activation s
 
 The sync is an **allowlist**: only `tools/`, `activation/`, `utils/` and `.env` travel, and `--delete` acts only inside those directories — `outputs/` and `.venv/` cannot be reached. It refuses unless the remote workspace holds the `.sapia-workspace` marker; if it says so, report it and stop (the fix is `bash scripts/vib.sh init --adopt`, which is the user's call).
 
-**The venv goes stale silently.** It is built once by `bash scripts/vib.sh bootstrap` and rsync never touches it afterwards. Nothing on vib uses `uv`: the build uses the `Miniconda3` module's Python (3.12) with stdlib `venv` and `pip`, and pins prosapia to the commit in `uv.lock`, so vib and Modal run the same library.
+**The venv goes stale silently.** It is built once by `bash scripts/vib.sh bootstrap` and rsync never touches it afterwards. The build uses `uv` (`module load uv` on the cluster): `uv sync --frozen` from `uv.lock`, so vib and Modal run the same library. The venv has no `pip`, so read what is installed with `bash scripts/vib.sh status`, not `.venv/bin/pip`.
 
 The trap: bumping the prosapia pin locally leaves the cluster on the old library with no signal. **Run `bash scripts/vib.sh status` at the start of a session and after any `uv.lock` change**; if it prints `pin: MISMATCH`, tell the user to re-run `bootstrap` rather than running against a stale venv. If `uv.lock` points at the editable `../prosapia`, `bootstrap` stops and needs `--commit <pushed sha>` — that is the user's call too.
 
