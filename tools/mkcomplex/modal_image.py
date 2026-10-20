@@ -1,9 +1,7 @@
 """Modal image for mkcomplex (used by ``--executor modal``).
 
-The task script is pure shell string work -- bash plus one awk one-liner for the
-FASTA -- so the image is a bare slim Debian: no scientific stack, no GPU, nothing
-pip-installed, and it builds in seconds. The manifest builder sets
-``gpus_per_task = 0``.
+The task script is bash plus one awk one-liner, so the image is bare slim Debian:
+nothing installed, no GPU (``gpus_per_task = 0``), built in seconds.
 """
 
 import modal
