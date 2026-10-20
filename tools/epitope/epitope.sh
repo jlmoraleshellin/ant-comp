@@ -37,6 +37,10 @@ SEQ_SOURCE=$(echo "$SAPIA_LINE" | cut -f5)
 SEQ_SOURCE=${SEQ_SOURCE:-structure}
 INPUT_COLUMN=$(echo "$SAPIA_LINE" | cut -f6)
 INPUT_COLUMN=${INPUT_COLUMN:-the input structure column}
+# Appended 2026-10-08. Defaulted, so a 6-field manifest from an older build still
+# runs (with the default overlap cutoff) instead of passing an empty string.
+CLASH_CUTOFF=$(echo "$SAPIA_LINE" | cut -f7)
+CLASH_CUTOFF=${CLASH_CUTOFF:-2.5}
 
 echo "[$(date +%T)] task $SAPIA_TASK_ID: epitope on $(wc -l <"$TASK_FILE") designs" \
      "(design=$DESIGN_CHAINS target=$TARGET_CHAINS cutoff=$CONTACT_CUTOFF A" \
@@ -55,6 +59,7 @@ WORKER_RC=0
         --design-chains "$DESIGN_CHAINS" \
         --target-chains "$TARGET_CHAINS" \
         --contact-cutoff "$CONTACT_CUTOFF" \
+        --clash-cutoff "$CLASH_CUTOFF" \
         --seq-source "$SEQ_SOURCE" \
         --input-column "$INPUT_COLUMN" \
         --out-dir "$OUT_DIR" || WORKER_RC=$?

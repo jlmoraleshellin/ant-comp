@@ -1,81 +1,56 @@
-"""Collect ``design_ph.py`` outputs into a child table -- one row per designed sequence.
+"""Collect ``design_ph.py`` outputs into a child table, one row per designed sequence.
 
-Lineage: the submitter symlinks each input complex as ``grp_<g>/inputs/<design_name>.pdb``
-and ``design_ph.py`` names every output file after the input stem, so
+The submitter symlinks each input as ``grp_<g>/inputs/<design_name>.pdb`` and
+``design_ph.py`` names every output after that stem, so the stem IS the parent row::
 
-    <out_dir>/**/<parent_name>.metrics.csv
-    <out_dir>/**/<parent_name>.fa
-    <out_dir>/**/<parent_name>.ext.fa
-    <out_dir>/**/<parent_name>.centers.json
-    <out_dir>/**/<parent_name>.couplings.csv      (--redesign-scope coupling only)
+    <out_dir>/**/<stem>.metrics.csv, .fa, .ext.fa, .centers.json, .couplings.csv
 
-and the stem IS the parent-table row. The search is a RECURSIVE glob on purpose: the
-subdirectory design_ph.py writes into under ``--out_folder`` is not documented, so this
-collector finds the files wherever they land rather than hardcoding a layout. A stem
-whose files are in two places at once is an error, not a silent first-match.
+The search is a recursive glob (the layout under ``--out_folder`` is undocumented); a
+stem found in two places is an error, not a first match. ``summary.csv`` is ignored and
+``couplings.csv`` stays a file (``couplings_path``), not columns.
 
-THE JOIN IS THE RISK
---------------------
-A row's sequence comes from ``<stem>.fa`` and its numbers from ``<stem>.metrics.csv``;
-if those two orders ever diverge, every design silently inherits another design's
-``ddE_mean``. So the join uses every scrap of evidence the two files share, and reports
-what it did:
+THE JOIN IS THE RISK. Sequences come from ``<stem>.fa`` and numbers from
+``<stem>.metrics.csv``; if their orders diverge, every design silently inherits
+another's ``ddE_mean``. ``join_mode`` says how they were paired:
 
-  1. **key, on the DESIGN ID** -- the primary ladder, and the one the real program
-     supports. A design header's first comma-token is its id (``<stem>_lam0_s0``) and
-     the metrics file repeats it in its ``name`` column. If those ids are unique on
-     both sides and the two SETS are identical, rows are paired value by value.
-     ``join_mode = "key"``, ``join_key = "name"``.
-     If the ids are NOT unique -- which a multi-lambda sweep may cause, since whether
-     ``0.25`` survives into the id is unverified -- the composite ``(id, lambda)`` is
-     tried, both halves being present in both files; ``join_key = "name,lambda"``.
-     Neither unique ⇒ **failed**, never positional.
-     Then ``lambda`` and the header's ``mutations`` (against ``n_mutations``) are
-     compared on every pair, and ``join_checked_fields`` lists ONLY the fields that
-     actually had a value on both sides. The rounded measurement echoes
-     (``dE_complex``, ``ddE``) are deliberately never compared: the header prints 3
-     decimals and the CSV 4, and the real data contains the tie that proves it.
-  2. **key, on shared ``key=value`` header fields** -- the legacy ladder, for a header
-     format with no design id. Same rules.
-  3. **positional** -- reached only when neither key exists at all: rows matched by
-     order, after the counts are asserted equal and every shared field is compared on
-     every pair. ``join_checked_fields`` empty here means nothing could corroborate it.
-  4. **failed** -- counts differ, a key exists but the two value SETS disagree, a
-     cross-checked field disagrees on some pair, a required file is missing, the stem is
-     ambiguous, a metrics row has more fields than the header, a centre does not match
-     the designed sequence (``centers_seq_check``), or ``centers.json`` and a row's own
-     ``centers`` cell name different centres (``centers_match_metrics``). The collector
-     then mints ONE row for that parent with an ``error`` status and the evidence. It
-     never emits numbers it cannot place, and never writes 0 where it means "no
-     measurement".
+  1. ``key`` on the design id (header first token == metrics ``name``), or on
+     ``(id, lambda)`` when ids repeat; ``lambda`` and ``mutations`` are then
+     cross-checked (``join_checked_fields``). The rounded echoes (``dE_complex``,
+     ``ddE``) are never compared: the header prints 3 decimals, the CSV 4.
+  2. ``key`` on shared identity ``key=value`` header fields (headers without an id).
+  3. ``positional``, only when no key exists: counts equal, shared fields compared.
+  4. ``failed``: counts differ, key value sets disagree, a cross-checked field
+     disagrees, a file is missing or ambiguous, a metrics row overflows its header, or
+     a centre check fails. The parent then gets ONE ``error`` row with the evidence,
+     never numbers it cannot place.
 
-A unique key whose value sets disagree is NOT "no key available" -- it is positive
-evidence that the two files are not in correspondence, so it fails rather than quietly
-falling back to order.
+``dE_complex`` / ``dE_apo`` are ``;``-joined per-centre strings: the numeric column
+keeps a single value (NA with several centres) and ``<name>_centres`` the verbatim
+string; ``ddE_centres`` and ``ddE_min`` derive from them (design_ph.py:1859-1877).
 
-THE METRICS FILE IS NOT ALL NUMBERS
------------------------------------
-READ FROM SOURCE at 7ffb756 (design_ph.py:1859-1877). ``dE_complex`` and ``dE_apo`` are
-``;``-joined PER-CENTRE 4-dp strings -- a single number with one centre, ``"a;b"`` with
-two, ``"nan;nan"`` on the apo side when there are no target chains. ``dE_complex_mean``
-and ``dE_apo_mean`` are the numeric means, and
-``ddE_mean = mean(dE_complex) - mean(dE_apo)``.
+THE CENTRES ARE PUBLISHED TWICE, for two different readers. ``centers`` is the packed
+AUDIT cell (``<index0>:<token>`` joined by ';', 0-BASED, token included): it is the
+only record of HIS-S vs HIS-P and NO TOOL PARSES IT. ``centre<k>_idx1`` are plain
+1-BASED integers in the SAME ORDER, the form a downstream flag consumes through the
+``{expr}`` island layer (one island is one integer), e.g.
+``--centers '{atomiumph_centre1_idx1},{atomiumph_centre2_idx1}'``. Both come from one
+pass over ``centers.json``, so they cannot disagree about which centre is centre<k>.
 
-A column that is a float on some rows and a string on others cannot be filtered, so the
-two per-centre columns are SPLIT: the numeric column keeps the single value (NA when
-there are several centres) and ``<name>_centres`` carries the verbatim string.
-``ddE_centres`` and ``ddE_min`` (the minimum over centres) are derived from them.
+``centre<k>_idx1`` IS A POSITION ALONG THE DESIGNED SEQUENCE OF THIS ROW
+(``atomiumph_sequence``). Under ``--output-scope all`` that sequence is every chain
+joined by '/', so an index into it is NOT a binder position; the columns are then NA
+with ``centres_idx1_basis = output_scope_all``, never a plausible wrong number. The
+same refusal when ``--binder-chains`` named MORE THAN ONE chain (the designed sequence
+is then their concatenation with NO '/', so the sequence check passes while an index
+into it is a position along no single chain), when the centre numbering key is not a
+0-based index, and when ``centers_seq_check`` did not confirm the residue at the index.
+``centres_idx1_basis`` names which. ``n_centres_idx1`` must equal ``n_centers``;
+anything smaller means some centre has no column.
 
-Two contradictions fail the parent: a per-centre count that disagrees with the row's own
-``centers`` cell or with ``centers.json``, and a ``mean(per-centre ddE)`` more than 2e-3
-from the file's ``ddE_mean``.
-
-What it does NOT collect
-------------------------
-``summary.csv`` is ignored: it ranks designs across structures, which sorting the
-prosapia table does natively and with the lineage intact. ``<stem>.couplings.csv`` stays
-a FILE (``couplings_path``, ``""`` when absent): a per-position influence map is not one
-value per design.
+Under ``--binder-alone`` (sidecar ``atomiumph_binder_alone``) every row has
+``binder_alone = True`` and the ``TARGET_DEPENDENT_NUMERIC`` columns are NA. That is an
+allowlist of names, so re-read the metrics header on a new pin. Semantics and traps:
+``.claude/skills/atomiumph/SKILL.md``.
 """
 
 import csv
@@ -88,31 +63,39 @@ import pandas as pd
 
 from prosapia.core import Collected, CollectCtx, CollectEach, DesignCtx
 
-# Sidecar written by the run (see run_atomiumph.py). Chains are recorded there because
-# they are run-wide: without them the table cannot say WHICH molecule was redesigned.
+# Sidecar written by the run (see run_atomiumph.py); the chains are run-wide.
 META_FILENAME = ".meta.json"
 EXPECTED_KEY = "atomiumph_expected_per_structure"
 BINDER_CHAINS_KEY = "atomiumph_binder_chains"
 TARGET_CHAINS_KEY = "atomiumph_target_chains"
 CENTER_MODE_KEY = "atomiumph_center_mode"
 OUTPUT_SCOPE_KEY = "atomiumph_output_scope"
-# VERIFIED 2026-10-09: the model-noise level decides which centres design_ph picks
-# (two runs over the same structures chose different centres at n03 and n05), and the
-# dir-label was until now its ONLY record. Written by the run from here on; for a leaf
-# written before that, recovered from the sub-manifest -- see ``noise_and_lam_from_tasks``.
+# Model noise decides which centres are picked; older leaves recover it from the tasks.
 MODEL_NOISE_KEY = "atomiumph_model_noise"
 LAM_SWEEP_KEY = "atomiumph_lam_sweep"
-# Same reason as the noise level: it changes which positions were allowed to move, so a
-# table that mixes two values of it is not ranking like against like.
+# Changes which positions may move, so two values are not like-for-like.
 PROTECT_TITRATABLE_KEY = "atomiumph_protect_titratable"
-# Modelled only because the upstream client defaults it to 0.5 where design_ph.py
-# defaults it to 0.0. Above 0 the apo graph enters sampling, so two values of it are
-# two different experiments.
+# Modelled because the upstream client defaults it to 0.5 and design_ph.py to 0.0.
 APO_WEIGHT_KEY = "atomiumph_apo_weight"
+# The value design_ph was GIVEN (--binder-alone forces 0.0), not the one typed.
+CHARGE_PRIOR_KEY = "atomiumph_charge_prior"
+# True = no target in the graph: target-dependent numbers are undefined, not measured.
+BINDER_ALONE_KEY = "atomiumph_binder_alone"
 
-# Header fields that IDENTIFY a draw. Only these may key or cross-check a join; a
-# shared field that is a measurement (``seq_rec=0.43`` against a full-precision CSV
-# value) would contradict a correct pairing. See ``is_identity_field``.
+# Target-dependent columns, blanked under --binder-alone (NA numeric, "" text).
+TARGET_DEPENDENT_NUMERIC = (
+    "dE_apo",
+    "dE_apo_mean",
+    "ddE",
+    "ddE_mean",
+    "ddE_min",
+    "interface_fraction",
+    "charge_field_min",
+    "charge_field_max",
+)
+TARGET_DEPENDENT_TEXT = ("dE_apo_centres", "ddE_centres")
+
+# Header fields that identify a draw; a shared measurement would contradict a pairing.
 IDENTITY_FIELDS = frozenset(
     {"lambda", "lam", "sample", "seed", "index", "design", "id", "name"}
 )
@@ -120,23 +103,22 @@ IDENTITY_FIELDS = frozenset(
 # Written per subgroup by atomiumph.sh from the image's baked /opt/atomium_ph/COMMIT.
 COMMIT_FILENAME = "image_commit.txt"
 
-# Metrics columns that are ``;``-joined PER-CENTRE strings, not numbers.
-# READ FROM SOURCE at 7ffb756 (design_ph.py:1859-1860):
-#     "dE_complex": ";".join(f"{v:.4f}" for v in de_complex),
-#     "dE_apo":     ";".join(f"{v:.4f}" for v in de_apo),
-# With one centre the cell is a single 4-dp number and reads as one; with several it is
-# "0.1234;0.5678" and would land in the same column as a STRING. A column that is
-# sometimes a float and sometimes a string cannot be filtered, so each of these is split:
-# the numeric column keeps the single value (NA when there are several) and a sibling
-# ``<name>_centres`` column carries the verbatim string.
+# Per-centre ``;``-joined strings (design_ph.py:1859-1860); see per_centre_energies.
 PER_CENTRE_COLUMNS = ("dE_complex", "dE_apo")
 
-# Marker csv.DictReader files surplus fields under. A row with more fields than the
-# header has shifted values; it is an error, not something to trim.
+# How many centres get a numeric ``centre<k>_idx1`` column. Cap, not a limit on the
+# run: ``--centers-per-type`` defaults to 2 and multiplies by the number of token types
+# (his_p/his_s 1, acid_p 2, all_p 3), so 2/4/6 centres are the defaults and a raised
+# --centers-per-type reaches more. 12 covers --centers-per-type up to 12 for the two
+# His modes, 6 for acid_p and 4 for all_p, at one integer column each. Truncation is
+# NEVER silent: ``n_centres_idx1`` < ``n_centers`` and ``centres_idx1_basis`` says
+# 'truncated', and ``centers`` keeps every centre.
+MAX_CENTRE_COLUMNS = 12
+
+# Key csv.DictReader files surplus fields under; such a row is shifted, hence an error.
 OVERFLOW_KEY = "__overflow__"
 
-# Suffixes design_ph.py appends to the input stem. Order matters: ".ext.fa" must be
-# tested before ".fa" or every ext FASTA would be filed under the stem "<name>.ext".
+# Suffixes design_ph.py appends to the stem; ".ext.fa" must be tried before ".fa".
 SUFFIXES = (
     ("metrics", ".metrics.csv"),
     ("couplings", ".couplings.csv"),
@@ -148,16 +130,7 @@ SUFFIXES = (
 # Directories the run creates that never hold design_ph output.
 SKIP_DIRS = ("atomiumph_logs", "atomiumph_tasks", "inputs")
 
-# Headers a FASTA preamble entry may use for the echoed input sequence. Matched
-# EXACTLY (case-insensitively, after stripping '>' and whitespace) rather than by a
-# substring: a loose match would silently drop a real design.
-#
-# VERIFIED 2026-10-09 against a real run: design_ph.py writes the echo as
-# ``><stem>_native`` -- the plain name QUALIFIED BY THE INPUT STEM. ``drop_preamble``
-# therefore also accepts ``<stem>_<p>`` for every ``p`` below, with the stem passed in
-# by the caller. Still an exact match on the whole first comma-token, never a
-# substring: a real design header that merely CONTAINS "native" survives, and so does
-# one belonging to another stem.
+# Preamble (input echo) headers, matched exactly: a substring would drop a real design.
 PREAMBLE_HEADERS = {
     "_init_sequence",
     "init",
@@ -171,9 +144,7 @@ PREAMBLE_HEADERS = {
     "wt",
 }
 
-# Column names this collector owns. A metrics column colliding with one of these is
-# emitted as ``metrics_<name>`` instead of overwriting it -- a trust column must never
-# be shadowed by the data it vouches for.
+# Names this collector owns; a colliding metrics column becomes metrics_<name>.
 RESERVED = {
     "join_mode",
     "join_key",
@@ -189,6 +160,7 @@ RESERVED = {
     "n_expected",
     "n_preamble_dropped",
     "entry_index",
+    "binder_alone",
     "binder_chains",
     "target_chains",
     "image_commit",
@@ -205,6 +177,10 @@ RESERVED = {
     "n_redesign",
     "centers_seq_check",
     "centers_match_metrics",
+    # Numeric centre positions (idx1_columns); British 'centre', see the docstring.
+    *[f"centre{k}_idx1" for k in range(1, MAX_CENTRE_COLUMNS + 1)],
+    "n_centres_idx1",
+    "centres_idx1_basis",
     "dE_complex_centres",
     "dE_apo_centres",
     "ddE_centres",
@@ -217,38 +193,29 @@ RESERVED = {
     "model_noise",
     "lam_sweep",
     "protect_titratable",
-    # design_ph.py echoes apo_weight into the metrics CSV too (design_ph.py:1869).
-    # The run-recorded value keeps the plain name -- it is what the SUBMIT asked for --
-    # and the program's echo becomes metrics_apo_weight, so the two can be compared
-    # instead of one silently overwriting the other.
+    # design_ph echoes apo_weight too (design_ph.py:1869); kept as metrics_apo_weight.
     "apo_weight",
+    # Same reasoning as apo_weight; --binder-alone makes it mode-dependent.
+    "charge_prior",
     "metrics_path",
     "couplings_path",
     "header",
-    # VERIFIED 2026-10-09: <stem>.metrics.csv really does carry a ``name`` column (the
-    # design id) and a ``centers`` column ("10:HIS-S"). Both are reserved so they are
-    # renamed to ``metrics_name`` / ``metrics_centers`` instead of landing on, or being
-    # overwritten by, this collector's own columns. See EXPECTED_COLLISIONS.
+    # metrics.csv carries `name` (design id) and `centers` ("10:HIS-S"): both renamed.
     "name",
 }
 
-# Metrics columns KNOWN to collide, so their rename is normal and is not announced. An
-# unexpected collision still prints, because it means upstream grew a column that
-# shadows a trust column and a reader needs to know the table layout moved.
+# Known collisions, renamed silently; any other collision prints a warning.
 EXPECTED_COLLISIONS = {"name", "centers", "apo_weight"}
 
 
-# --------------------------------------------------------------------------- #
-# file discovery
-# --------------------------------------------------------------------------- #
+# --- file discovery ---
 
 
 def index_outputs(out_dir: Path) -> dict[str, dict[str, list[Path]]]:
     """Map ``stem -> kind -> [paths]`` for every design_ph output under ``out_dir``.
 
-    Recursive, because the subdirectory layout under ``--out_folder`` is undocumented.
-    Lists, not single paths, so an ambiguous stem (the same name written twice) can be
-    reported as an error instead of resolved by luck.
+    Recursive (the layout under ``--out_folder`` is undocumented), and lists so an
+    ambiguous stem can be reported instead of resolved by luck.
     """
     index: dict[str, dict[str, list[Path]]] = {}
     for path in sorted(out_dir.rglob("*")):
@@ -266,11 +233,7 @@ def index_outputs(out_dir: Path) -> dict[str, dict[str, list[Path]]]:
 
 
 def commit_for(path: Path, out_dir: Path) -> str:
-    """The image commit recorded beside this output, walking up to ``out_dir``.
-
-    atomiumph.sh writes ``image_commit.txt`` into each subgroup dir, so a table can
-    distinguish two runs built from different pins of a private, moving branch.
-    """
+    """The image commit recorded beside this output, walking up to ``out_dir``."""
     here = path.parent
     while True:
         marker = here / COMMIT_FILENAME
@@ -284,21 +247,14 @@ def commit_for(path: Path, out_dir: Path) -> str:
         here = here.parent
 
 
-# --------------------------------------------------------------------------- #
-# parsing
-# --------------------------------------------------------------------------- #
+# --- parsing ---
 
 
 def parse_fasta(path: Path, join: str = "") -> list[tuple[str, str]]:
     """``[(header, sequence)]`` in file order; the header excludes the leading '>'.
 
-    ``join`` is what a WRAPPED sequence's continuation lines are joined with. ``""`` is
-    right for a canonical FASTA, where the sequence is one letter per character, and
-    WRONG for ``.ext.fa``, whose sequence is space-separated tokens: joining
-    ``"… GLU-D"`` to ``"HIS-S …"`` with nothing fuses two residues into the single
-    nonsense token ``GLU-DHIS-S``. The real files are unwrapped, so this never bit --
-    which is exactly why it had to be fixed before a longer binder makes them wrapped.
-    Call it with ``join=" "`` for the extended FASTA.
+    ``join`` glues a wrapped sequence's lines: ``""`` for canonical FASTA, ``" "`` for
+    ``.ext.fa``, whose tokens would otherwise fuse (``GLU-DHIS-S``).
     """
     entries: list[tuple[str, str]] = []
     header: str | None = None
@@ -317,11 +273,10 @@ def parse_fasta(path: Path, join: str = "") -> list[tuple[str, str]]:
 
 
 def parse_header(header: str) -> dict[str, str]:
-    """``key=value`` fields of a FASTA header, comma-separated.
+    """``key=value`` fields of a comma-separated FASTA header.
 
-    ``gen_sample_0, lambda=0.25, ddE=1.2`` -> ``{'gen_sample': '0', 'lambda': '0.25',
-    'ddE': '1.2'}``. A bare trailing ``_<int>`` token (AtomiUM's own style) becomes a
-    field so it can serve as a join key; any other bare token is ignored.
+    A bare ``<word>_<int>`` token (``gen_sample_0``) becomes a field so it can serve
+    as a join key; any other bare token is ignored.
     """
     fields: dict[str, str] = {}
     for part in header.split(","):
@@ -341,13 +296,8 @@ def parse_header(header: str) -> dict[str, str]:
 def read_metrics(path: Path) -> tuple[list[str], list[dict[str, str]], int]:
     """``(column order, rows, n_overflow)`` of a metrics CSV, every value kept as text.
 
-    Text on purpose: the coercion to numbers happens once, visibly, in ``_as_number`` --
-    pandas' own inference would turn an empty cell into NaN and a '0' into 0.0 without
-    distinguishing them.
-
-    ``n_overflow`` counts rows carrying MORE fields than the header. Those rows' values
-    are shifted, so the caller must treat them as an error; a short row (fewer fields)
-    is fine and its missing values become NA.
+    Coercion happens once, visibly, in ``_as_number``. ``n_overflow`` counts rows with
+    MORE fields than the header: their values are shifted, so the caller must error.
     """
     n_overflow = 0
     with open(path, newline="") as f:
@@ -391,21 +341,16 @@ def _norm(text: str) -> str:
         return text.casefold()
 
 
-# --------------------------------------------------------------------------- #
-# the join
-# --------------------------------------------------------------------------- #
+# --- the join ---
 
 
 class Join(NamedTuple):
     """The outcome of pairing FASTA entries with metrics rows.
 
-    ``mode``   "key" | "positional" | "failed".
-    ``keys``   the fields rows were MATCHED on (key mode only).
-    ``checked`` the shared fields that were COMPARED value-by-value. In key mode these
-                are the keys; in positional mode a non-empty list means the order was
-                corroborated, an empty one means nothing could corroborate it.
-    ``pairs``  (entry, metrics row) in FASTA order; empty when mode is "failed".
-    ``note``   why it failed, for the error row's status.
+    ``mode`` is "key" | "positional" | "failed"; ``keys`` the fields rows were matched
+    on; ``checked`` the shared fields compared value by value (empty with "positional"
+    means nothing corroborated the order); ``pairs`` (entry, row) in FASTA order;
+    ``note`` why it failed.
     """
 
     mode: str
@@ -418,19 +363,16 @@ class Join(NamedTuple):
 def is_identity_field(name: str, bare: set[str]) -> bool:
     """Is this header field an IDENTIFIER of a draw, rather than a measurement?
 
-    Only identifiers may key or cross-check a join. A header field that is a *metric*
-    is worse than useless here: the sibling tool's FASTA embeds values like
-    ``seq_rec=0.43``, and comparing that rounded text against the CSV's full-precision
-    ``0.431872`` would contradict a perfectly correct pairing and fail every parent.
+    Only identifiers may key or cross-check a join: comparing a rounded ``seq_rec=0.43``
+    with the CSV's full precision would fail a correct pairing.
     """
     return name.casefold() in IDENTITY_FIELDS or name in bare
 
 
 def bare_field_names(header: str) -> set[str]:
-    """Fields ``parse_header`` synthesised from a bare ``<word>_<int>`` token.
+    """Fields ``parse_header`` made from bare ``<word>_<int>`` tokens.
 
-    Those are positional identifiers by construction (``gen_sample_0``), so they are
-    identity-like however they are named.
+    Positional identifiers by construction (``gen_sample_0``).
     """
     names: set[str] = set()
     for part in header.split(","):
@@ -462,37 +404,21 @@ def shared_fields(
 def first_token(header: str) -> str:
     """The first comma-separated token of a FASTA header.
 
-    VERIFIED 2026-10-09: for a design entry this is the design id and it is exactly the
-    ``name`` column of ``<stem>.metrics.csv`` (``tnf_15_a2_model_0_lam0_s0``); for the
-    preamble entry it is ``<stem>_native``.
+    For a design this is its id (the metrics ``name``); for the echo, ``<stem>_native``.
     """
     return header.split(",")[0].strip()
 
 
-# The stage-1 seeds design_ph.py writes BEFORE the designs under --seed-mode generate.
-# READ FROM SOURCE at 7ffb756 (design_ph.py:1772-1779)::
-#
-#     if args.seed_mode == "generate":
-#         for copy_index in range(seeds.shape[0]):
-#             fasta_lines.append(f">{name}_stage1_seed_s{copy_index}\n" + ...)
-#
-# One per --num-seq, after the ``_native`` echo. They are NOT designs: they are what
-# stage 1 generated before the selective infill ran. Unrecognised, they would make
-# ``n_fa_entries`` exceed ``n_metrics_rows`` by num_seq and fail EVERY parent -- so a
-# whole seed mode would be unusable. Matched by an anchored pattern on the full first
-# comma-token, with the known stem, so a design can never match it.
+# Stage-1 seeds under --seed-mode generate (design_ph.py:1772-1779): not designs.
 _STAGE1_SEED_RE = r"stage1_seed_s\d+"
 
 
 def is_preamble_header(header: str, stem: str | None) -> bool:
     """Is this header a non-design entry (the input echo, or a stage-1 seed)?
 
-    EXACT match on the whole first comma-token, against the bare names and -- this is
-    the part the real program needed -- against ``<stem>_<name>``, which is what
-    design_ph.py actually writes (``>tnf_15_a2_model_0_native``), plus
-    ``<stem>_stage1_seed_s<int>`` under ``--seed-mode generate``. Never a substring
-    test: ``>native_like_lam0_s0`` is a design and must survive, and so must a design
-    whose id merely contains "seed".
+    Exact match on the whole first token, bare or as ``<stem>_<name>`` (what design_ph
+    writes, e.g. ``<stem>_native``, ``<stem>_stage1_seed_s0``). Never a substring:
+    ``>native_like_lam0_s0`` is a design.
     """
     token = first_token(header).casefold()
     if token in PREAMBLE_HEADERS:
@@ -517,22 +443,10 @@ def drop_preamble(
     return entries, dropped
 
 
-# Metrics columns that may hold the design id, i.e. the FASTA header's first token.
-# VERIFIED 2026-10-09: design_ph.py writes ``name``. Kept as a tuple so a rename
-# upstream is a one-line change, but deliberately short -- an unverified guess here
-# would key the join on something that is not an identifier.
+# Metrics columns that may hold the design id (design_ph writes ``name``).
 DESIGN_ID_COLUMNS = ("name",)
 
-# Header field -> (metrics column, comparison) for the fields cross-checked AFTER rows
-# have been paired on the design id. An allowlist, not "everything shared", because:
-#
-#   the design header prints the measurements ROUNDED TO 3 DECIMALS
-#   (``dE_complex=0.720``) while the CSV keeps 4 (``0.7195``) and a full-precision mean
-#   besides. Comparing those would FAIL A CORRECT PAIRING -- and the real data already
-#   contains the exact tie at the rounding boundary (0.720 vs 0.7195) that proves it.
-#
-# Only identifiers are compared: ``lambda`` numerically (header ``0`` == csv ``0.0``)
-# and the header's ``mutations`` against the csv's ``n_mutations`` as integers.
+# Identifiers cross-checked after pairing (never measurements: header 3 dp, CSV 4 dp).
 CROSS_CHECKS: tuple[tuple[str, str, str], ...] = (
     ("lambda", "lambda", "number"),
     ("mutations", "n_mutations", "int"),
@@ -558,18 +472,11 @@ def _design_id_join(
     columns: list[str],
     rows: list[dict[str, str]],
 ) -> Join | None:
-    """Pair on the design id -- the header's first token and the metrics ``name`` cell.
+    """Pair on the design id: the header's first token and the metrics ``name`` cell.
 
-    Returns ``None`` when this evidence is not available (no id column, or the header
-    ids are not unique), so the caller falls through to the shared-field logic. Returns
-    a FAILED join when the id IS available but the two files name different draws or a
-    cross-checked identifier disagrees: that is a contradiction, and a contradiction is
-    never answered with a positional guess.
-
-    This is the join the real program supports. It is also the only one that can tell
-    two draws apart at ``lambda 0`` with ``--temperature 0.1``, where both draws can
-    come back with the SAME sequence and the SAME ddE to 6 decimals and differ in
-    nothing but ``_s0`` / ``_s1``.
+    ``None`` when no id evidence exists, so the shared-field logic runs. A contradiction
+    (different draws, a disagreeing identifier) is a failed join, never a positional
+    guess. Only this join tells apart draws identical in sequence and ddE (_s0 vs _s1).
     """
     if not entries or not rows:
         return None
@@ -585,13 +492,7 @@ def _design_id_join(
     m_ids: list[tuple[str, ...]] = [(str(r.get(id_col, "")).strip(),) for r in rows]
     key_names = [id_col]
 
-    # THE COMPOSITE FALLBACK. Whether design_ph renders lambda 0.25 into the design id
-    # as `lam0.25` or truncates it to `lam0` is UNVERIFIED -- the only real output seen
-    # had a single lambda, so a multi-lambda sweep could produce the SAME first token
-    # for several draws. If it does, the id alone is not a key, but (id, lambda) still
-    # is: both are present in both files. Falling back to POSITION here instead would
-    # pair draws that differ in nothing the collector can see, which is exactly the
-    # silent mis-mapping this tool exists to prevent.
+    # If ids repeat (multi-lambda sweep?), (id, lambda) is still a key, never position.
     if not all(i[0] for i in h_ids) or len(set(h_ids)) != len(h_ids):
         if lam_col is None or not all("lambda" in h for h in headers):
             return None  # genuinely no key; the shared-field logic may still find one
@@ -636,9 +537,7 @@ def _design_id_join(
         compared = 0
         for i, (header, row) in enumerate(zip(headers, [r for _, r in pairs])):
             cell = str(row.get(col, "")).strip()
-            # F6: only count a field as CHECKED where both sides actually had a value.
-            # A field present in the header but blank in every metrics cell compared
-            # nothing, and must not appear in join_checked_fields as if it had.
+            # Count a field as checked only where both sides had a value.
             if field not in header or header[field].strip() == "" or cell == "":
                 continue
             compared += 1
@@ -657,14 +556,12 @@ def _design_id_join(
 def align_entries(
     entries: list[tuple[str, str]], columns: list[str], rows: list[dict[str, str]]
 ) -> Join:
-    """Pair FASTA entries with metrics rows, using every shared IDENTITY field as
-    evidence (see ``is_identity_field`` for why a shared metric field is excluded)."""
+    """Pair FASTA entries with metrics rows using shared identity fields as evidence."""
     raw = [h for h, _ in entries]
     headers = [parse_header(h) for h in raw]
     bare = set().union(*(bare_field_names(h) for h in raw)) if raw else set()
 
-    # Strongest evidence first: the design id, which the real program writes on both
-    # sides. Falls through (None) only when it is genuinely unavailable.
+    # Strongest evidence first: the design id, which the program writes on both sides.
     id_join = _design_id_join(entries, headers, columns, rows)
     if id_join is not None:
         return id_join
@@ -681,9 +578,7 @@ def align_entries(
         unique = len(set(h_keys)) == len(h_keys) and len(set(m_keys)) == len(m_keys)
         if unique:
             if set(h_keys) != set(m_keys):
-                # A usable key whose two value sets disagree is POSITIVE EVIDENCE that
-                # the files are not in correspondence. Falling back to order here would
-                # be answering a contradiction with a guess.
+                # Unique keys with different value sets: the files do not correspond.
                 return Join(
                     "failed", [], shared, [],
                     f"shared field(s) {', '.join(shared)} are unique in both files but "
@@ -698,8 +593,7 @@ def align_entries(
             return Join("key", shared, shared, pairs)
 
     if len(entries) != len(rows):
-        # `checked` is [] here on purpose: nothing was compared against anything, so
-        # naming fields would claim corroboration that never happened.
+        # checked stays []: nothing was compared, so naming fields would overclaim.
         return Join(
             "failed", [], [], [],
             f"{len(entries)} FASTA entries vs {len(rows)} metrics rows, and no shared "
@@ -707,9 +601,7 @@ def align_entries(
         )
 
     pairs = list(zip(entries, rows))
-    # A shared field that is not jointly unique (``lambda`` is exactly that, and is the
-    # field most likely to be present in both) still CORROBORATES a positional pairing:
-    # compare it on every pair rather than discarding it.
+    # A non-unique shared field (lambda) still corroborates a positional pairing.
     for field in shared:
         for i, ((header, _), row) in enumerate(pairs):
             want, got = _norm(headers[i][field]), _norm(metric(row, field))
@@ -726,10 +618,8 @@ def align_entries(
 class ExtJoin(NamedTuple):
     """The outcome of pairing the extended FASTA onto the canonical one.
 
-    Same four states and the same evidence rules as ``Join``: ``mode`` is "key",
-    "positional", "missing" or "failed", ``checked`` names the identity fields compared
-    value-by-value (empty with "positional" means nothing could corroborate the order),
-    ``seqs`` are the extended sequences in the order of ``entries``.
+    As ``Join``, with "missing" for an absent ``.ext.fa``; ``seqs`` are the extended
+    sequences in the order of ``entries``.
     """
 
     mode: str
@@ -741,14 +631,9 @@ class ExtJoin(NamedTuple):
 def align_ext(
     entries: list[tuple[str, str]], ext_entries: list[tuple[str, str]]
 ) -> ExtJoin:
-    """Extended sequences in the order of ``entries``.
+    """Extended sequences in the order of ``entries``, mirroring ``align_entries``.
 
-    A full mirror of ``align_entries``, because ``sequence_ext`` is as mappable-wrong as
-    ``ddE_mean`` is: match on shared identity fields when they are jointly unique; FAIL
-    when such a key exists but the two files name different draws; otherwise pair by
-    position with the counts asserted equal AND every shared identity field compared on
-    every pair. The caller records the outcome in ``ext_status``/``ext_checked_fields``
-    rather than letting a reader assume ``sequence_ext`` was verified.
+    The caller records the outcome in ``ext_status`` / ``ext_checked_fields``.
     """
     if not ext_entries:
         return ExtJoin("missing", [], [])
@@ -758,9 +643,7 @@ def align_ext(
     ext_headers = [parse_header(h) for h in ext_raw]
     bare = set().union(*(bare_field_names(h) for h in raw + ext_raw))
 
-    # Strongest evidence first, exactly as in _design_id_join: the header's first
-    # token. VERIFIED 2026-10-09 -- .ext.fa repeats the design headers verbatim (minus
-    # the native echo), so this is the join the real program supports.
+    # Strongest evidence first, as in _design_id_join (.ext.fa repeats the headers).
     h_ids: list[tuple[str, ...]] = [(first_token(h),) for h in raw]
     e_ids: list[tuple[str, ...]] = [(first_token(h),) for h in ext_raw]
     key_names = ["design_id"]
@@ -770,9 +653,7 @@ def align_ext(
         and len(set(h_ids)) == len(h_ids)
         and len(set(e_ids)) == len(e_ids)
     )
-    # Same composite fallback as _design_id_join: if the id alone repeats (which a
-    # multi-lambda sweep may do -- see there), (id, lambda) is still a key, and pairing
-    # by POSITION instead would be a guess dressed as a mapping.
+    # Composite fallback as in _design_id_join; pairing by position would be a guess.
     if not usable and all("lambda" in h for h in headers + ext_headers):
         h_ids = [(first_token(r), _norm(h["lambda"])) for r, h in zip(raw, headers)]
         e_ids = [(first_token(r), _norm(h["lambda"]))
@@ -807,7 +688,7 @@ def align_ext(
             compared = 0
             for i, (h, ident) in enumerate(zip(headers, h_ids)):
                 other = by_id[ident]
-                # F6: both sides must actually carry a value for this to count.
+                # Both sides must carry a value for the field to count as checked.
                 if (field not in h or field not in other
                         or h[field].strip() == "" or other[field].strip() == ""):
                     continue
@@ -864,48 +745,32 @@ def align_ext(
     return ExtJoin("positional", shared, [seq for _, seq in ext_entries])
 
 
-# --------------------------------------------------------------------------- #
-# centers.json
-# --------------------------------------------------------------------------- #
+# --- centers.json ---
 
 _CENTER_LIST_KEYS = ("centers", "selected_centers", "chosen_centers", "pinned_centers")
 _CHAIN_KEYS = ("chain", "chain_id", "chain_name", "binder_chain", "asym_id")
-# ORDERED BY NUMBERING CONVENTION, most explicit first. Which one matched is reported
-# in ``centers_resnum_key``: this is the only place in the tool that infers a numbering
-# convention. Read that column before mapping a centre onto a structure.
-#
-# VERIFIED 2026-10-09 against a real run and the input CIF: design_ph.py writes
-# ``position``, and it is a ZERO-BASED INDEX INTO THE BINDER CHAIN, not a PDB residue
-# number. (tnf: position 10 is auth residue 11, MET in the input, and the designed
-# sequence carries H at index 10. f3: position 0 is auth residue 1, SER in the input,
-# and the designed sequence carries H at index 0.) An index-like key is therefore
-# reported with an explicit ``_index0`` suffix, and the centre is checked against the
-# designed sequence -- see ``check_centers_against_sequence``.
-_RESNUM_KEYS = ("resnum", "res_num", "res_id", "resi", "residue", "seqpos", "position", "pos")
-# Keys whose value this tool treats as a 0-based index into the designed sequence. Only
-# these get the ``_index0`` label and only these are sequence-checked; an explicit
-# ``resnum``-style key is left unlabelled and unchecked, because nothing here has
-# verified ITS base.
+# Most explicit first; the matched key is reported in ``centers_resnum_key``.
+# ``index``/``idx`` ride at the END so no existing match changes: _first returns the
+# first PRESENT key, so appending can only rescue an entry that matched nothing before.
+# Every member of _INDEX0_KEYS must appear here or the index0 branch is unreachable.
+_RESNUM_KEYS = (
+    "resnum", "res_num", "res_id", "resi", "residue", "seqpos", "position", "pos",
+    "index", "idx",
+)
+# Keys read as 0-based indices: only these get ``_index0`` and the sequence check.
 _INDEX0_KEYS = frozenset({"position", "pos", "seqpos", "index", "idx"})
-# Keys that may carry the centre's protonation TOKEN. ``token`` is the verified one.
-# The others are accepted for the label, but only a value that LOOKS like a full token
-# (``HIS-S``, or a bare 3-letter code) is ever read as a residue -- see
-# ``_center_token``. A ``state`` of "S" is a protonation state, not serine.
+if not _INDEX0_KEYS <= set(_RESNUM_KEYS):  # not assert: -O would strip the guard
+    raise RuntimeError(
+        f"index0 key(s) {sorted(_INDEX0_KEYS - set(_RESNUM_KEYS))} are not in "
+        f"_RESNUM_KEYS, so _first can never match them and the index0 branch is "
+        f"unreachable: every centre would refuse with a misleading basis."
+    )
+# Keys that may carry the protonation TOKEN; only a full token (HIS-S, ASP) counts.
 _STATE_KEYS = ("token", "state", "target_state", "microstate", "residue_state", "aa")
-# How much the model WANTED this centre where it put it. VERIFIED 2026-10-09: the real
-# file records ``placement_score`` per centre (tnf 0.708, f3 0.093 -- the f3 His site
-# was barely wanted at all). Collected as the MINIMUM over the centres, because the
-# weakest centre is what decides whether the placement was any good.
-#
-# ONE key, not a list of plausible aliases: a bare ``score`` in some other schema could
-# be any quantity at all, and a mis-sourced placement score reads exactly like a real
-# one. If upstream renames it this is a one-line change, and until then the column is
-# NA -- which is the honest answer.
+# One key, not aliases (a bare ``score`` could be anything); collected as the minimum.
 _PLACEMENT_KEYS = ("placement_score",)
 
-# Keys that record which positions were allowed to move. ``free_positions`` is the one
-# the real program writes (VERIFIED 2026-10-09: len 12 for tnf and 6 for f3, matching
-# "Stage 2: redesign positions = 12 / 6" in the task .out).
+# Keys that record which positions could move; design_ph writes ``free_positions``.
 _REDESIGN_KEYS = (
     "n_redesign",
     "free_positions",
@@ -926,15 +791,9 @@ ONE_LETTERS = frozenset(THREE_TO_ONE.values())
 def residue_letter(token: Any) -> str | None:
     """The 1-letter residue a protonation TOKEN names, or ``None`` if unrecognised.
 
-    DERIVED FROM THE TOKEN, never from ``--center-mode``: ``HIS-S``/``HIS-P`` -> ``H``,
-    ``ASP-D``/``ASP-P`` -> ``D``, ``GLU-D`` -> ``E``. A bare 3-letter code works too.
-    ``None`` means "cannot check this", which is NA -- not a failure.
-
-    **A bare 1-letter value is deliberately NOT accepted.** In several schemas a
-    ``state`` field holds a protonation state letter, and reading ``"state": "S"`` as
-    serine would invent a residue and then fail a perfectly correct centre on it. Only
-    a full token (``XXX`` or ``XXX-Y``) is read; see ``_center_token``, which is what
-    decides which JSON field is allowed to be a token at all.
+    From the token, never ``--center-mode``: ``HIS-S`` -> ``H``, ``GLU-D`` -> ``E``; a
+    bare 3-letter code works. A bare 1-letter value is NOT accepted: a ``state`` of "S"
+    is a protonation state, not serine. ``None`` means "cannot check", i.e. NA.
     """
     head = str(token).split("-")[0].strip().upper()
     if len(head) != 3:
@@ -943,12 +802,7 @@ def residue_letter(token: Any) -> str | None:
 
 
 def _center_token(value: Any) -> str | None:
-    """``value`` if it looks like a protonation token, else ``None``.
-
-    A token is ``XXX`` or ``XXX-Y`` with a 3-letter head. Anything shorter is a state
-    flag or a letter code whose meaning this tool has not verified, and reading it as a
-    residue would invent a check rather than perform one.
-    """
+    """``value`` if it is a protonation token (``XXX`` or ``XXX-Y``), else ``None``."""
     if value is None:
         return None
     text = str(value).strip()
@@ -957,13 +811,10 @@ def _center_token(value: Any) -> str | None:
 
 
 def _parse_metrics_centers(cell: Any) -> set[tuple[int, str]] | None:
-    """``{(index, token)}`` parsed from a metrics ``centers`` cell, or ``None``.
+    """``{(index, token)}`` from a metrics ``centers`` cell (``10:HIS-S``), or ``None``.
 
-    The verified single-centre form is ``10:HIS-S``. **How several centres are joined
-    is UNVERIFIED** -- the only real output had one -- so every plausible separator is
-    accepted (``;`` ``,`` ``|`` and whitespace). ``None`` means "could not be read as
-    (index, token) pairs", which the caller turns into NA, never into a failure: a
-    separator nobody has seen must not condemn a correct run.
+    The multi-centre separator is unverified, so ``;`` ``,`` ``|`` and whitespace are
+    accepted; ``None`` becomes NA in the caller, never a failure.
     """
     if cell is None:
         return None
@@ -987,18 +838,19 @@ def _parse_metrics_centers(cell: Any) -> set[tuple[int, str]] | None:
 
 
 class Centers(NamedTuple):
-    """``columns`` to put on every child row, ``checks`` to verify against each design.
+    """``columns`` for every child row, plus the evidence kept out of them.
 
-    ``checks`` is ``[(index0, letter, token)]`` for the centres whose numbering key is
-    index-like AND whose token names a residue. ``pairs`` is ``{(index0, token)}`` for
-    every centre that had both, used to cross-check each metrics row's own ``centers``
-    cell. Both are kept out of ``columns`` on purpose: they are evidence for a check,
-    not columns.
+    ``checks`` is ``[(index0, letter, token)]`` for sequence-checking each centre;
+    ``pairs`` is ``{(index0, token)}`` for cross-checking a metrics row's own cell.
+    ``idx1`` is ``([index0 + 1 | None, ...], basis)`` IN THE ORDER OF ``centers``, kept
+    OUT of ``columns`` because whether it may be written depends on the row (see
+    ``idx1_columns``): an error row must never carry a position.
     """
 
     columns: dict[str, Any]
     checks: list[tuple[int, str, str]]
     pairs: set[tuple[int, str]] | None = None
+    idx1: tuple[list[int | None], str] = ([], "unavailable")
 
 
 def _first(mapping: dict, keys: tuple[str, ...]) -> tuple[Any, str]:
@@ -1025,20 +877,11 @@ def _as_index(value: Any) -> int | None:
 def parse_centers(path: Path | None) -> Centers:
     """Audit columns from ``<stem>.centers.json``, plus the centres to sequence-check.
 
-    The real schema (VERIFIED 2026-10-09) is::
-
-        {"centers": [{"position": 10, "token": "HIS-S", "target_idx": 22,
-                      "comparison_idx": 21, "placement_score": 0.708}],
-         "free_positions": [9, 11, …], "center_mode": "his_s",
-         "placement_region": "interface"}
-
-    There is NO chain field, NO residue number and NO charge-field range in it, so
-    ``charge_field_min``/``charge_field_max`` stay NA (the range is printed in the task
-    ``.out`` only). ``placement_score`` IS there per centre and is collected as the
-    MINIMUM over the centres. Reading stays defensive for other schemas: ``centers_source``
-    records which key the centres came from and ``unparsed`` means nothing recognisable
-    was there. Unparsed means the CENTRE columns are NA -- it says nothing about the
-    metrics columns, which come from a different file.
+    Schema: ``{"centers": [{"position": 10, "token": "HIS-S", "placement_score": 0.7}],
+    "free_positions": [...], "center_mode": ...}``. ``position`` is a 0-based index into
+    the binder chain; there is no chain, residue number or charge-field range
+    (``charge_field_*`` stay NA). ``centers_source`` names the key the centres came
+    from; ``unparsed`` leaves only the centre columns NA.
     """
     out: dict[str, Any] = {
         "centers": "",
@@ -1074,6 +917,13 @@ def parse_centers(path: Path | None) -> Centers:
     checks: list[tuple[int, str, str]] = []
     pairs: set[tuple[int, str]] = set()
     pairs_complete = True
+    # One slot per entry, in the SAME order as the ``centers`` labels below, so
+    # centre<k>_idx1 and the k-th ';'-joined entry of atomiumph_centers can never
+    # disagree about which centre is centre<k>. None = this entry's number is not a
+    # 0-based index (so +1 would be a guess); any None makes the whole row refuse.
+    idx1_values: list[int | None] = []
+    # The FIRST reason an entry got no position, or None when every entry got one.
+    idx1_refusal: str | None = None
     if entries is not None:
         labels, resnum_keys = [], []
         placements: list[float] = []
@@ -1091,13 +941,29 @@ def parse_centers(path: Path | None) -> Centers:
                 if index is not None and token is not None:
                     pairs.add((index, token.upper()))
                 else:
-                    # One centre this tool cannot express as (index, token) makes the
-                    # SET incomparable, so the metrics cross-check must say NA rather
-                    # than report a difference that is only its own blindness.
+                    # Inexpressible centre: the set is incomparable, so NA.
                     pairs_complete = False
+                # 1-BASED position = 0-based index + 1, and ONLY from an index0 key.
+                # Each refusal gets its OWN reason: "not_index0" standing in for three
+                # different causes sends a reader looking in the wrong place.
+                if not resnum_key:
+                    reason = "no_resnum_key"      # none of _RESNUM_KEYS in this entry
+                elif resnum_key not in _INDEX0_KEYS:
+                    reason = "not_index0"         # a residue NUMBER; +1 would be a guess
+                elif index is None or index < 0:
+                    # _as_index refuses a float (10.0) and anything non-integral, and a
+                    # negative index addresses nothing: both are a malformed number,
+                    # not a numbering convention.
+                    reason = "bad_index"
+                else:
+                    reason = None
+                if reason is None:
+                    idx1_values.append(index + 1)  # type: ignore[operator]
+                else:
+                    idx1_values.append(None)
+                    idx1_refusal = idx1_refusal or reason
                 if resnum_key:
-                    # Label the numbering convention IN the column, so a reader cannot
-                    # mistake an index for a residue number by reading `centers` alone.
+                    # Label the numbering convention in the column.
                     resnum_keys.append(
                         f"{resnum_key}_index0"
                         if resnum_key in _INDEX0_KEYS
@@ -1111,23 +977,17 @@ def parse_centers(path: Path | None) -> Centers:
             else:
                 labels.append(str(entry))
                 pairs_complete = False
+                idx1_values.append(None)
+                idx1_refusal = idx1_refusal or "not_a_mapping"
         out["centers"] = ";".join(labels)
         out["n_centers"] = len(entries)
         out["centers_resnum_key"] = ",".join(sorted(set(resnum_keys)))
-        # The MINIMUM, not the mean: one barely-wanted centre is enough to make the
-        # whole placement doubtful, and a strong second centre must not average it
-        # away. NA -- never 0 -- when no centre recorded the key: 0 is a real score
-        # (a centre the model was indifferent to) and must stay distinguishable from
-        # "this file did not say".
+        # Minimum, not mean: one weak centre dooms the placement. NA, never 0.
         out["placement_score_min"] = min(placements) if placements else pd.NA
     out["centers_source"] = source
 
     if isinstance(obj, dict):
-        # READ FROM SOURCE at 7ffb756 (design_ph.py:2001-2005). placement_metric
-        # decides WHICH positions become centres, and its default changed between
-        # commits -- ddE at 7ffb756, dE_complex at dee5a4d, where the key does not
-        # exist at all. The same structure therefore gets different centres under the
-        # two builds, so the table has to say which. Empty (NA) on older output.
+        # placement_metric picks the centres and its default varies by commit.
         for key in ("placement_metric", "redesign_scope"):
             value = obj.get(key)
             if isinstance(value, str) and value:
@@ -1144,7 +1004,104 @@ def parse_centers(path: Path | None) -> Centers:
             if isinstance(value, list):
                 out["n_redesign"] = len(value)
                 break
-    return Centers(out, checks, pairs if (pairs and pairs_complete) else None)
+
+    if not idx1_values:
+        basis = "unavailable"
+    else:
+        basis = idx1_refusal or "index0+1"
+    return Centers(
+        out,
+        checks,
+        pairs if (pairs and pairs_complete) else None,
+        (idx1_values, basis),
+    )
+
+
+def idx1_columns(
+    centres: Centers, output_scope: str, binder_chains: str, seq_check: Any
+) -> dict[str, Any]:
+    """``centre<k>_idx1`` for this row, or NA with ``centres_idx1_basis`` saying why.
+
+    The positions another tool pins (``--centers '{atomiumph_centre1_idx1},...'``):
+    1-BASED along the DESIGNED SEQUENCE of this row (``atomiumph_sequence``), in the
+    order of the ``centers`` audit cell. There is no direction -- a position is not
+    better high or low.
+
+    A number is written only when all five hold, and ``centres_idx1_basis`` names the
+    first that did not:
+
+      ``unavailable``        centers.json was absent, unreadable or held no entries.
+      ``not_a_mapping``      a centre entry was not a JSON object at all.
+      ``no_resnum_key``      a centre entry carried none of the known number keys.
+      ``not_index0``         a centre's number came from a resnum/resi-style key, so
+                             it is a residue number and +1 would be a guess.
+      ``bad_index``          an index0 key whose value is not a non-negative integer
+                             (``10.0`` included: one float in a future upstream JSON
+                             must not read as a numbering-convention problem).
+      ``output_scope_<s>``   the run did not use ``--output-scope binder``, so the
+                             designed sequence is the WHOLE COMPLEX ('/'-joined) and
+                             the index is not a position along the binder chain. An
+                             empty scope (no sidecar) is ``output_scope_unknown``.
+      ``multi_binder_chain`` ``--binder-chains`` named MORE THAN ONE chain. The
+                             designed sequence is then their CONCATENATION WITH NO
+                             '/' separator, so ``check_centers_against_sequence``
+                             passes and an index into it is a position along no single
+                             chain -- while every consumer (hisbond's --binder-chain,
+                             atomium's --fixed-positions) counts along ONE. With
+                             chains A(40) and B(55), a centre in A at concatenated
+                             position 20 would land on residue 20 of B.
+      ``binder_chains_unknown``  the sidecar recorded no ``--binder-chains`` at all
+                             (an older leaf), so the one-chain premise is unchecked.
+      ``seq_unverified``     ``centers_seq_check`` is not True for this row, so
+                             nothing confirmed the designed sequence carries the
+                             centre's residue at that index.
+      ``seq_check_failed``   the designed sequence CONTRADICTED the centres, so the
+                             row is an error row (stamped by the caller, not here).
+      ``error_row``          this row is an error row for any other reason: no
+                             position is published on one.
+      ``truncated``          written, but only the first MAX_CENTRE_COLUMNS of them.
+      ``index0+1``           written, all of them.
+
+    ``n_centres_idx1`` is how many were written; it must equal ``n_centers``, and any
+    smaller value (0 included) means some centre has no column.
+    """
+    out: dict[str, Any] = {
+        f"centre{k}_idx1": pd.NA for k in range(1, MAX_CENTRE_COLUMNS + 1)
+    }
+    values, basis = centres.idx1
+    if basis != "index0+1":
+        # 0 of n is a measurement; nothing parsed at all is NA.
+        out["n_centres_idx1"] = 0 if values else pd.NA
+        out["centres_idx1_basis"] = basis
+        return out
+    scope = (output_scope or "").strip()
+    if scope != "binder":
+        out["n_centres_idx1"] = 0
+        out["centres_idx1_basis"] = f"output_scope_{scope or 'unknown'}"
+        return out
+    # _check_chains stores the list space-separated; accept commas too.
+    chains = [c for c in str(binder_chains or "").replace(",", " ").split() if c]
+    if not chains:
+        # NOT multi_binder_chain: telling a reader the run named more than one chain
+        # when it named none is a false diagnosis in the column whose job IS the
+        # diagnosis. An older leaf with no sidecar lands here.
+        out["n_centres_idx1"] = 0
+        out["centres_idx1_basis"] = "binder_chains_unknown"
+        return out
+    if len(chains) != 1:
+        out["n_centres_idx1"] = 0
+        out["centres_idx1_basis"] = "multi_binder_chain"
+        return out
+    if seq_check is not True:
+        out["n_centres_idx1"] = 0
+        out["centres_idx1_basis"] = "seq_unverified"
+        return out
+    for k, idx1 in enumerate(values[:MAX_CENTRE_COLUMNS], start=1):
+        out[f"centre{k}_idx1"] = idx1
+    written = min(len(values), MAX_CENTRE_COLUMNS)
+    out["n_centres_idx1"] = written
+    out["centres_idx1_basis"] = "index0+1" if written == len(values) else "truncated"
+    return out
 
 
 def check_centers_against_sequence(
@@ -1152,14 +1109,9 @@ def check_centers_against_sequence(
 ) -> tuple[Any, str]:
     """Does the designed sequence carry each centre's residue at the centre's index?
 
-    This is the ONE trust check that can catch a wrong index base, and it is why the
-    tool may print a centre position at all. A disagreement is never a column value to
-    read past: the caller fails the parent.
-
-    Returns ``(True, "")`` when every checkable centre agreed, ``(False, why)`` on a
-    disagreement, and ``(pd.NA, "")`` when the check could not run -- no centres, no
-    recognisable residue in any token, or a multi-chain ``sequence`` (``--output-scope
-    all`` joins chains with '/', so a binder-chain index no longer indexes it).
+    The one check that catches a wrong index base. Returns ``(True, "")``,
+    ``(False, why)``, or ``(NA, "")`` when it could not run (no centres or tokens, or a
+    multi-chain ``sequence`` under ``--output-scope all``).
     """
     if not checks or not sequence or "/" in sequence:
         return pd.NA, ""
@@ -1180,16 +1132,10 @@ def check_centers_against_sequence(
 def check_centers_against_metrics(
     pairs: set[tuple[int, str]] | None, cell: Any
 ) -> tuple[Any, str]:
-    """Does this row's own ``centers`` cell name the same centres as ``centers.json``?
+    """Does this row's ``centers`` cell name the same centres as ``centers.json``?
 
-    ``centers.json`` is written ONCE per structure and stamped on every child row;
-    ``metrics_centers`` is written per DESIGN. Nothing checked they agreed until now,
-    and with ``--centers-per-type 2`` there is a real set to disagree about.
-
-    Returns ``(True, "")`` on an exact set match, ``(False, why)`` on a clear
-    disagreement, and ``(pd.NA, "")`` whenever either side could not be read as
-    ``(index, token)`` pairs -- an unverified multi-centre separator must produce NA,
-    never a failure.
+    Returns ``(True, "")``, ``(False, why)``, or ``(NA, "")`` when either side cannot be
+    read as ``(index, token)`` pairs: an unverified separator is never a failure.
     """
     if not pairs:
         return pd.NA, ""
@@ -1212,12 +1158,8 @@ def check_centers_against_metrics(
 def check_sequence_ext(ext_seq: str, sequence: str) -> tuple[bool, str]:
     """Is ``sequence_ext`` the same molecule as ``sequence``, token for token?
 
-    ``sequence_ext`` is the design with explicit protonation tokens, and it is as
-    mappable-wrong as any metric: a correct-looking token string belonging to another
-    draw would be read as this design's protonation pattern. Two assertions, both cheap:
-    one token per residue, and every token that resolves to a residue must BE that
-    residue. A token this tool cannot resolve (an unknown 3-letter head) is skipped --
-    unrecognised is not disagreement.
+    One token per residue, and every token that resolves to a residue must BE that
+    residue; an unresolvable token is skipped (unrecognised is not disagreement).
     """
     tokens = ext_seq.split()
     if not tokens:
@@ -1246,10 +1188,9 @@ def split_per_centre(cell: Any) -> list[str]:
 
 
 def _floats(parts: list[str]) -> list[float] | None:
-    """``parts`` as floats, or ``None`` if any is not a finite number.
+    """``parts`` as floats, or ``None`` if any is not finite.
 
-    ``nan`` is deliberately rejected: design_ph writes ``nan`` per centre for the apo
-    side when there are no target chains, and a mean over it is not a measurement.
+    ``nan`` is rejected: design_ph writes it per centre on the apo side with no target.
     """
     out: list[float] = []
     for part in parts:
@@ -1264,11 +1205,9 @@ def _floats(parts: list[str]) -> list[float] | None:
 
 
 class PerCentre(NamedTuple):
-    """Per-centre energies for ONE design row, and whether they are self-consistent.
+    """Per-centre energy columns for ONE design row.
 
-    ``columns`` are the values to stamp; ``note`` is non-empty when the row contradicts
-    itself, in which case the caller fails the parent rather than publishing a mean
-    whose parts do not add up.
+    A non-empty ``note`` means the row contradicts itself: the caller fails the parent.
     """
 
     columns: dict[str, Any]
@@ -1278,22 +1217,13 @@ class PerCentre(NamedTuple):
 def per_centre_energies(
     row: dict[str, str], lower_to_col: dict[str, str], n_centers: Any
 ) -> PerCentre:
-    """Split ``dE_complex`` / ``dE_apo`` into numeric + verbatim + derived columns.
+    """Split ``dE_complex`` / ``dE_apo`` into numeric, verbatim and derived columns.
 
-    READ FROM SOURCE at 7ffb756 (design_ph.py:1859-1868): both cells are ``;``-joined
-    4-dp per-centre values, ``dE_complex_mean``/``dE_apo_mean`` are the numeric means,
-    and ``ddE_mean = mean(dE_complex) - mean(dE_apo)``, which is also the mean of the
-    per-centre ddE. Not yet observed in a run -- the only real output had one centre.
-
-    ``ddE_min`` is the point of this function: ``ddE_mean`` cannot distinguish two
-    histidines that each carry half the switch from one that carries all of it and one
-    that carries none. The minimum over centres can.
-
-    Two contradictions FAIL the parent (``note``):
-      * the per-centre counts disagree with each other or with the row's ``centers``
-        cell -- the values cannot be attributed to centres at all;
-      * ``mean(per-centre ddE)`` differs from the file's ``ddE_mean`` by more than
-        2e-3, which 4-dp rounding cannot explain.
+    ``ddE_min`` is the point: ``ddE_mean`` cannot tell two half-switching histidines
+    from one that carries all of it. Contradictions fail the parent (``note``): counts
+    that disagree with each other, the row's ``centers`` cell or ``centers.json``, or a
+    ``mean(per-centre ddE)`` more than 2e-3 from the file's ``ddE_mean``.
+    Source: design_ph.py:1859-1868.
     """
     out: dict[str, Any] = {
         "dE_complex_centres": "",
@@ -1317,8 +1247,7 @@ def per_centre_energies(
             f"{len(complex_parts)} per-centre dE_complex value(s) against "
             f"{len(apo_parts)} dE_apo value(s)"
         ))
-    # The row's OWN centres cell, not centers.json: this is a per-row consistency
-    # check, and centers.json is compared separately by centers_match_metrics.
+    # The row's own centres cell; centers.json is compared by centers_match_metrics.
     centres_col = lower_to_col.get("centers")
     centres_cell = row.get(centres_col, "") if centres_col else ""
     cell_centres = split_per_centre(centres_cell)
@@ -1339,8 +1268,7 @@ def per_centre_energies(
     complex_values = _floats(complex_parts)
     apo_values = _floats(apo_parts)
     if complex_values is None or apo_values is None:
-        # nan apo (no target chains) or an unparseable cell: the verbatim strings are
-        # still collected, the derived numbers stay NA, and nothing is contradicted.
+        # nan apo (no target) or unparseable: keep the strings, derived columns stay NA.
         return PerCentre(out)
 
     ddes = [c - a for c, a in zip(complex_values, apo_values)]
@@ -1369,12 +1297,28 @@ def per_centre_energies(
 def hamming(a: str, b: str) -> Any:
     """Per-position differences between two equal-length strings, else NA.
 
-    NA on a length mismatch rather than a truncated count: two sequences of different
-    length are not two versions of one design, and a number here would be read as one.
+    NA on a length mismatch, never a truncated count (not versions of one design).
     """
     if not a or not b or len(a) != len(b):
         return pd.NA
     return sum(1 for x, y in zip(a, b) if x != y)
+
+
+def blank_target_columns(data: dict[str, Any]) -> None:
+    """Under ``--binder-alone``, blank every target-dependent column in place.
+
+    NA, never 0 or an error: the row is ``OK`` and a zero would read as a measurement.
+    Only present columns are touched, and ``placement_metric`` is corrected to
+    ``dE_complex``, which is what actually ranked the centres (no apo graph).
+    """
+    for key in TARGET_DEPENDENT_NUMERIC:
+        if key in data:
+            data[key] = pd.NA
+    for key in TARGET_DEPENDENT_TEXT:
+        if key in data:
+            data[key] = ""
+    if data.get("placement_metric"):
+        data["placement_metric"] = "dE_complex"
 
 
 def _charge_field_range(obj: dict) -> tuple[Any, Any]:
@@ -1401,9 +1345,7 @@ def _num_or_na(value: Any) -> Any:
         return pd.NA
 
 
-# --------------------------------------------------------------------------- #
-# the collector
-# --------------------------------------------------------------------------- #
+# --- the collector ---
 
 
 def read_meta(out_dir: Path) -> dict:
@@ -1418,9 +1360,9 @@ def read_meta(out_dir: Path) -> dict:
     return meta if isinstance(meta, dict) else {}
 
 
-# Flags recoverable from the sub-manifest's argv tail, keyed by the column they fill.
-# ``--lam`` is not here: it travels as its own TSV field, not in the tail.
+# Flags recoverable from the argv tail, by column (--lam has its own TSV field).
 _TAIL_FLAGS = {"model_noise": "--checkpoint_model_noise",
+               "charge_prior": "--charge_prior",
                "protect_titratable": "--protect_titratable",
                "apo_weight": "--apo_weight"}
 
@@ -1428,18 +1370,7 @@ _TAIL_FLAGS = {"model_noise": "--checkpoint_model_noise",
 def noise_and_lam_from_tasks(out_dir: Path) -> tuple[str, str]:
     """``(model_noise, lam_sweep)`` recovered from the sub-manifests, else ``("", "")``.
 
-    Thin wrapper over ``run_params_from_tasks`` kept for readability at the call site.
-
-    The fallback for a leaf whose ``.meta.json`` predates those keys. ``run_atomiumph``
-    writes one TSV row per subgroup into ``atomiumph_tasks/task_<t>.tsv``::
-
-        <grp_dir>\\t<binder chains>\\t<target chains>\\t<lam …>\\t<design_ph argv tail>
-
-    and the argv tail carries ``--checkpoint_model_noise <level>``. Values that are not
-    identical across every row are reported as unknown (``""``) rather than attributed
-    to rows they may not describe -- the leaf was reused by two different submits.
-    Never a guessed default: the whole point of the column is that n03 and n05 pick
-    DIFFERENT centres, so a wrong label is worse than none.
+    Values that differ across rows are unknown, never a guessed default.
     """
     noises: set[str] = set()
     lams: set[str] = set()
@@ -1467,12 +1398,10 @@ def noise_and_lam_from_tasks(out_dir: Path) -> tuple[str, str]:
 
 
 def run_params_from_tasks(out_dir: Path) -> dict[str, str]:
-    """Every recoverable run parameter from the sub-manifests: ``{column: value}``.
+    """Run parameters recoverable from the sub-manifests, ``{column: value}``.
 
-    The fallback for a leaf whose ``.meta.json`` predates a key. A value that is not
-    IDENTICAL across every sub-manifest row is omitted rather than attributed to rows it
-    may not describe. Never a guessed default -- an absent key must read as NA, because
-    the whole point of these columns is that two values of them are not comparable.
+    For leaves whose ``.meta.json`` predates a key. A value not identical across every
+    row is omitted, never defaulted: an absent key must read as NA.
     """
     found: dict[str, set[str]] = {k: set() for k in _TAIL_FLAGS}
     lams: set[str] = set()
@@ -1501,39 +1430,35 @@ def run_params_from_tasks(out_dir: Path) -> dict[str, str]:
 def _error_row(parent: str, message: str, data: dict[str, Any]) -> Collected:
     """One child row recording that this parent's output could not be trusted.
 
-    ``path=""`` on purpose: a <leaf>_path pointing at a .metrics.csv would be handed to
-    a sequence tool by a later ``-i atomiumph_path``.
+    ``path=""`` so a later ``-i atomiumph_path`` cannot hand a .metrics.csv to a tool.
     """
     return Collected(name=f"{parent}_p0", parent=parent, path="",
                      status=f"error: {message}", data=data)
 
 
 def collect_atomiumph(ctx: CollectCtx) -> CollectEach:
-    """Per-parent collector. atomiumph is a create tool: the framework iterates the
-    ready parents and this mints one child row (``<parent>_p<i>``) per designed
-    sequence, carrying ``parent`` for lineage. Rows are rebuilt from disk, so
-    re-running is idempotent."""
+    """Per-parent collector: one child row ``<parent>_p<i>`` per designed sequence."""
     index = index_outputs(ctx.out_dir)
     meta = read_meta(ctx.out_dir)
     expected = meta.get(EXPECTED_KEY)
     expected = expected if isinstance(expected, int) else pd.NA
+    # --binder-alone: no target in the graph; absent (older leaves) means False.
+    binder_alone = bool(meta.get(BINDER_ALONE_KEY, False))
     run_columns = {
+        "binder_alone": binder_alone,
         "binder_chains": str(meta.get(BINDER_CHAINS_KEY, "")),
         "target_chains": str(meta.get(TARGET_CHAINS_KEY, "")),
-        # Run-wide, and both decide how the row must be READ: center_mode fixes what a
-        # high ddE_mean means (which pH binds), output_scope 'all' makes `sequence` a
-        # slash-joined multi-chain string so seq_len stops being a binder length.
+        # Run-wide, and both decide how a row must be read.
         "center_mode": str(meta.get(CENTER_MODE_KEY, "")),
         "output_scope": str(meta.get(OUTPUT_SCOPE_KEY, "")),
     }
-    # The noise level decides WHICH CENTRES design_ph picks, so two runs over the same
-    # structures at n03 and n05 are not comparable. The run records it; a leaf written
-    # before that falls back to the sub-manifest, and to "" (NA) if even that is gone.
+    # Model noise decides which centres are picked; older leaves fall back to the tasks.
     sidecar = {
         "model_noise": str(meta.get(MODEL_NOISE_KEY, "") or ""),
         "lam_sweep": str(meta.get(LAM_SWEEP_KEY, "") or ""),
         "protect_titratable": str(meta.get(PROTECT_TITRATABLE_KEY, "") or ""),
         "apo_weight": str(meta.get(APO_WEIGHT_KEY, "") or ""),
+        "charge_prior": str(meta.get(CHARGE_PRIOR_KEY, "") or ""),
     }
     if not all(sidecar.values()):
         from_tasks = run_params_from_tasks(ctx.out_dir)
@@ -1543,28 +1468,7 @@ def collect_atomiumph(ctx: CollectCtx) -> CollectEach:
     warned: set[str] = set()
     stale_warned: set[str] = set()
 
-    # F4, THE COLLECTOR HALF -- ADVISORY, NOT FATAL. See the long note below.
-    #
-    # The hazard is real: `grp_<gid>` restarts at 0 on every submit, nothing prunes
-    # `grp_<g>/out`, and `.meta.json` is rewritten each submit, so a rerun under the
-    # same dir label with a different --model-noise / --center-mode / chains /
-    # --protect-titratable leaves the PREVIOUS run's outputs in place to be stamped with
-    # the NEW run's parameters. That is prevented at SUBMIT time, deterministically, by
-    # `_check_no_stale_outputs` in run_atomiumph.py -- which is the half that can refuse
-    # safely, because it knows exactly which stems this submit will regenerate.
-    #
-    # Here, all that is available is a FILE MTIME against the sidecar's, and that is not
-    # sound enough to fail a parent on:
-    #   * a PARTIAL `--force` rerun rewrites the sidecar and regenerates only some
-    #     stems; the untouched stems are then "older" though their rows were correct,
-    #     and erroring them would destroy good rows in an existing table;
-    #   * any copy of a run_dir (rsync, a Volume download, `cp -r` without -p) can
-    #     reorder mtimes without a single byte changing. MEASURED while building this:
-    #     a plain `shutil.copytree` of a healthy leaf flipped every stem to "stale".
-    # So a false positive is cheap to produce and expensive to suffer, while a false
-    # NEGATIVE is already covered at submit time. It is recorded as a trust column
-    # (`output_predates_meta`) and printed once, and a caller who wants it fatal writes
-    # one line in a `-f` module.
+    # Advisory only: mtimes are unsound (partial reruns, copies); submit is the guard.
     meta_mtime = 0.0
     meta_path = ctx.out_dir / META_FILENAME
     if meta_path.is_file():
@@ -1587,11 +1491,7 @@ def collect_atomiumph(ctx: CollectCtx) -> CollectEach:
                     continue
         return sorted(out)
 
-    # design_ph.py is always run in --pdb_dir (batch) mode, where a structure that fails
-    # does NOT abort the batch: the task exits 0 and that stem simply has no files. One
-    # summary line here, rather than a print buried per design, because the count is the
-    # signal -- the per-structure reason is in design_ph's trailing failure list in the
-    # task's .out.
+    # Batch mode does not abort on a per-structure failure: report the count once.
     absent = [str(n) for n in ctx.ready.index if str(n) not in index]
     if absent:
         shown = ", ".join(absent[:20]) + (" …" if len(absent) > 20 else "")
@@ -1605,10 +1505,7 @@ def collect_atomiumph(ctx: CollectCtx) -> CollectEach:
     def one(d: DesignCtx) -> Iterable[Collected]:
         files = index.get(d.name)
         if not files:
-            # Reported in the summary above. Nothing is minted and the framework leaves
-            # the parent uncollected -- the same contract as atomium, and the right one,
-            # because collect's ready set can legitimately contain designs a filtered
-            # run never submitted.
+            # Reported above; the framework leaves the parent uncollected.
             return
 
         base: dict[str, Any] = {
@@ -1621,15 +1518,17 @@ def collect_atomiumph(ctx: CollectCtx) -> CollectEach:
             "n_fa_entries": pd.NA,
             "n_ext_entries": pd.NA,
             "n_expected": expected,
-            # F10: NA, not 0. On an error row that never parsed the FASTA, zero
-            # preamble entries were not OBSERVED -- the file was not read. 0 here would
-            # be a measurement, and would make `n_fa_entries + n_preamble_dropped`
-            # arithmetic silently wrong.
+            # NA, not 0: an error row that never parsed the FASTA observed no preamble.
             "n_preamble_dropped": pd.NA,
-            # NA, never False: an error row that never got as far as the centres has
-            # not disagreed with anything, it has simply not been checked.
+            # NA, never False: an error row has not disagreed, it was just not checked.
             "centers_seq_check": pd.NA,
             "centers_match_metrics": pd.NA,
+            # Numeric centre positions: NA on every error row (see idx1_columns).
+            **{f"centre{k}_idx1": pd.NA for k in range(1, MAX_CENTRE_COLUMNS + 1)},
+            "n_centres_idx1": pd.NA,
+            # An explicit value, not "": an error row publishes no position, and a
+            # blank basis would be an eighth, undocumented reason.
+            "centres_idx1_basis": "error_row",
             # False = this stem's files are newer than the sidecar, i.e. normal.
             "output_predates_meta": False,
             "native_sequence": "",
@@ -1665,9 +1564,7 @@ def collect_atomiumph(ctx: CollectCtx) -> CollectEach:
         fasta_path = files.get("fa", [None])[0]
         if metrics_path is None or fasta_path is None:
             missing = ".metrics.csv" if metrics_path is None else ".fa"
-            # Any file of this stem anchors the walk up to image_commit.txt equally
-            # well, and the commit is a trust column worth keeping even on an error
-            # row. Both of these can be absent at once, so there may be no anchor.
+            # Any file of the stem anchors the image_commit.txt walk, if there is one.
             anchor = next((p for paths in files.values() for p in paths), None)
             base["image_commit"] = commit_for(anchor, ctx.out_dir) if anchor else ""
             yield _error_row(
@@ -1678,18 +1575,10 @@ def collect_atomiumph(ctx: CollectCtx) -> CollectEach:
 
         base["image_commit"] = commit_for(metrics_path, ctx.out_dir)
         columns, rows, n_overflow = read_metrics(metrics_path)
-        # The stem IS the parent name, and design_ph.py writes the native echo as
-        # ``><stem>_native`` -- so the stem is what makes the preamble recognisable.
+        # The stem is the parent name, and design_ph writes the echo as <stem>_native.
         all_entries = parse_fasta(fasta_path)
         entries, dropped = drop_preamble(all_entries, d.name)
-        # F9: KEEP what was dropped. The echo is the sequence every design was built
-        # from, and it is the ONLY way to check `n_mutations` against the sequences
-        # themselves -- the real data has mutations=4 on rows whose canonical distance
-        # to this sequence is 3, and without this column that cannot even be noticed.
-        # The native REFERENCE is specifically the ``_native`` echo, never a stage-1
-        # seed: under --seed-mode generate the seeds are what the design was built
-        # FROM, but the echo is the input structure's own sequence and is the only
-        # stable baseline for n_diff_native across seed modes.
+        # Keep the `_native` echo (never a stage-1 seed): the n_diff_native baseline.
         native = next(
             (
                 seq
@@ -1699,8 +1588,7 @@ def collect_atomiumph(ctx: CollectCtx) -> CollectEach:
             ),
             "",
         )
-        # ``join=" "``: .ext.fa is space-separated tokens, so wrapped continuation
-        # lines must not be fused (see parse_fasta).
+        # join=" ": .ext.fa is space-separated tokens, so wrapped lines must not fuse.
         ext_entries, _ = drop_preamble(
             parse_fasta(files["ext_fa"][0], join=" ") if files.get("ext_fa") else [],
             d.name,
@@ -1724,9 +1612,7 @@ def collect_atomiumph(ctx: CollectCtx) -> CollectEach:
 
         join = align_entries(entries, columns, rows)
         if join.mode == "failed":
-            # The one failure this tool exists to never paper over: the sequences and
-            # the numbers cannot be put in the same row. An error row, not N rows of
-            # plausible numbers attached to the wrong sequences.
+            # Never paper over this: an error row, not numbers on the wrong sequences.
             yield _error_row(
                 d.name, f"cannot map sequences to metrics: {join.note}",
                 {**base, "join_mode": "failed",
@@ -1746,11 +1632,7 @@ def collect_atomiumph(ctx: CollectCtx) -> CollectEach:
         centers = parse_centers(files.get("centers", [None])[0])
         couplings = files.get("couplings", [None])[0]
 
-        # THE CENTRE TRUST CHECK. `position` is a 0-based index into the binder chain,
-        # so the designed sequence must carry the residue the token names at exactly
-        # that index. A disagreement means the index base (or the chain) is wrong, and
-        # every centre column would then point a reader at the wrong residue -- so the
-        # parent FAILS instead of shipping numbers nobody can place.
+        # Centre trust check: the sequence must carry the token's residue at its index.
         seq_checks = [
             check_centers_against_sequence(centers.checks, sequence)
             for (_, sequence), _ in join.pairs
@@ -1766,22 +1648,16 @@ def collect_atomiumph(ctx: CollectCtx) -> CollectEach:
                 {**base, "join_mode": join.mode,
                  "join_key": ",".join(join.keys),
                  "join_checked_fields": ",".join(join.checked),
-                 **centers.columns, "centers_seq_check": False},
+                 **centers.columns, "centers_seq_check": False,
+                 # The one failure that disproves the index base: say so in the basis.
+                 "centres_idx1_basis": "seq_check_failed"},
             )
             return
 
-        # F2, THE SECOND CENTRE CHECK. centers.json is written ONCE per structure and
-        # stamped on every child row; each metrics row carries its OWN `centers` cell.
-        # Nothing compared them until now, and with --centers-per-type 2 there is a real
-        # set to disagree about. A clear disagreement means the per-parent centre
-        # columns describe a different design from the one in the row, so the parent
-        # fails exactly as a sequence-check failure does. An unreadable cell (the
-        # multi-centre separator is unverified) is NA, never a failure.
+        # Second check: centers.json vs each row's own centers cell; unreadable is NA.
         lower_cols = {c.casefold(): c for c in columns}
 
-        # The per-centre energy split and its two self-consistency checks. Done before
-        # any row is yielded so a contradiction fails the parent rather than publishing
-        # a ddE_mean whose parts do not add up to it.
+        # Per-centre energy split and consistency checks, before any row is yielded.
         per_centre = [
             per_centre_energies(row, lower_cols, centers.columns.get("n_centers"))
             for _, row in join.pairs
@@ -1821,9 +1697,7 @@ def collect_atomiumph(ctx: CollectCtx) -> CollectEach:
             )
             return
 
-        # The extended FASTA is ONE column's provenance, so it gets its own status. A
-        # row's <leaf>_status must gate the metric it describes, not every metric in the
-        # row -- an absent .ext.fa must not hide a perfectly collected ddE_mean.
+        # .ext.fa has its own status: its absence must not hide a good ddE_mean.
         ext_status = {
             "missing": f"error: {d.name}.ext.fa is absent",
             "failed": f"error: cannot map sequence_ext: {ext.note}",
@@ -1834,15 +1708,10 @@ def collect_atomiumph(ctx: CollectCtx) -> CollectEach:
             data["entry_index"] = i
             data["sequence"] = sequence
             data["seq_len"] = len(sequence)
-            # F9: how far this design moved from the echoed input, computed from the
-            # sequences themselves. NA on a length mismatch or an absent echo -- never
-            # a truncated count. This is what makes the header's `mutations=` (and so
-            # the metrics `n_mutations`) checkable by a reader.
+            # Distance from the echoed input (NA on a length mismatch or absent echo).
             data["n_diff_native"] = hamming(sequence, native)
             data["centers_match_metrics"] = match_checks[i][0]
-            # F3: sequence_ext must be THIS design, token for token. A correct-looking
-            # token string belonging to another draw is exactly as wrong as a
-            # mis-mapped ddE_mean, and nothing downstream could detect it.
+            # sequence_ext must be THIS design, token for token.
             ext_seq = ext.seqs[i] if ext.seqs else ""
             row_ext_status = ext_status
             if ext_seq:
@@ -1855,17 +1724,11 @@ def collect_atomiumph(ctx: CollectCtx) -> CollectEach:
                     )
             data["ext_status"] = row_ext_status
             data["sequence_ext"] = ext_seq
-            # Metrics columns pass through VERBATIM under their upstream header names,
-            # so a column upstream adds appears here without a code change and nothing
-            # loses its provenance to a rename.
+            # Metrics columns pass through verbatim; new upstream columns need no code.
             for column in columns:
                 key = column
                 if key in RESERVED:
-                    # VERIFIED collisions: `name` (the design id -- also the join key,
-                    # kept away from the table's own index) and `centers` (the metrics
-                    # file's own "10:HIS-S" string, kept away from this collector's
-                    # parse of centers.json). Both become metrics_<name>; neither is
-                    # announced, because the rename is the normal case, not news.
+                    # Known collisions (name, centers) become metrics_<name> quietly.
                     key = f"metrics_{column}"
                     if column not in warned and column not in EXPECTED_COLLISIONS:
                         warned.add(column)
@@ -1874,9 +1737,7 @@ def collect_atomiumph(ctx: CollectCtx) -> CollectEach:
                             f"trust column; collected as {key!r}"
                         )
                 if column.casefold() in {c.casefold() for c in PER_CENTRE_COLUMNS}:
-                    # Keep the column NUMERIC. One centre -> the single value; several
-                    # -> NA, with the verbatim string in <name>_centres. Never a
-                    # column that is a float on some rows and "a;b" on others.
+                    # Numeric only: several centres -> NA (see <name>_centres).
                     parts = split_per_centre(row.get(column, ""))
                     data[key] = _as_number(parts[0]) if len(parts) == 1 else pd.NA
                 else:
@@ -1884,9 +1745,21 @@ def collect_atomiumph(ctx: CollectCtx) -> CollectEach:
             data.update(per_centre[i].columns)
             data.update(centers.columns)
             data["centers_seq_check"] = seq_checks[i][0]
+            # After centers.columns and the seq check: idx1 is gated on both.
+            data.update(
+                idx1_columns(
+                    centers,
+                    run_columns["output_scope"],
+                    run_columns["binder_chains"],
+                    seq_checks[i][0],
+                )
+            )
             data["metrics_path"] = str(metrics_path)
             data["couplings_path"] = str(couplings) if couplings else ""
             data["header"] = header
+            # Last: blank what is undefined without a target.
+            if binder_alone:
+                blank_target_columns(data)
             yield Collected(
                 name=f"{d.name}_p{i}",
                 parent=d.name,

@@ -161,6 +161,7 @@ def run_worker(
     sequence: str = "",
     seq_source: str = "structure",
     task_line: str | None = None,
+    clash_cutoff: float | None = None,
 ) -> pd.Series:
     """One design through the worker; returns its result row.
 
@@ -191,6 +192,8 @@ def run_worker(
         "--out-dir",
         str(out_dir),
     ]
+    if clash_cutoff is not None:  # omitted = the default, as epitope.sh would
+        sys.argv += ["--clash-cutoff", str(clash_cutoff)]
     worker.main()
     return pd.read_csv(out_dir / f"{name}.tsv", sep="\t", dtype=str).iloc[0]
 
@@ -243,6 +246,7 @@ def build_manifest(tmp: Path, structures: dict[str, Path], **overrides):
         contact_cutoff=overrides.pop("contact_cutoff", 5.0),
         designs_per_task=overrides.pop("designs_per_task", 20),
         sequence_column=overrides.pop("sequence_column", None),
+        clash_cutoff=overrides.pop("clash_cutoff", 2.5),
     )
     lookup_values = overrides.pop("lookup", {})
     ctx = ManifestCtx(
@@ -261,6 +265,40 @@ def build_manifest(tmp: Path, structures: dict[str, Path], **overrides):
             if line.strip()
         )
     return rows, sub, args
+
+
+def write_atoms(path: Path, target: list, design: list) -> Path:
+    """A complex built atom by atom: each entry is (resnum, resname, atom_name,
+    xyz). Target is chain A, design chain B. Used for the overlap columns, where
+    the answer must be a distance placed by hand (added 2026-10-08)."""
+    st = gemmi.Structure()
+    st.name = path.stem
+    model = gemmi.Model("1")
+    for chain_id, atoms in (("A", target), ("B", design)):
+        chain = gemmi.Chain(chain_id)
+        residues: dict[int, gemmi.Residue] = {}
+        order: list[int] = []
+        for resnum, resname, atom_name, xyz in atoms:
+            if resnum not in residues:
+                res = gemmi.Residue()
+                res.name = resname
+                res.seqid = gemmi.SeqId(resnum, " ")
+                residues[resnum] = res
+                order.append(resnum)
+            atom = gemmi.Atom()
+            atom.name = atom_name
+            atom.element = gemmi.Element(atom_name[0])
+            atom.pos = gemmi.Position(*(float(v) for v in xyz))
+            atom.occ = 1.0
+            residues[resnum].add_atom(atom)
+        for resnum in order:
+            chain.add_residue(residues[resnum])
+        model.add_chain(chain)
+    st.add_model(model)
+    st.setup_entities()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    st.write_pdb(str(path))
+    return path
 
 
 def num(row: pd.Series, col: str) -> float | None:
@@ -317,10 +355,14 @@ def main() -> None:
             rows, sub, args = build_manifest(tmp, structures)
             check(args.gpus_per_task == 0, "the builder forces gpus_per_task = 0")
             check(
-                len(rows) == 1 and len(rows[0]) == 6,
-                "one task row per batch, with 6 fields (task_file, design, target, "
-                "cutoff, seq_source, input_column) -- the two new ones APPENDED, "
-                "so epitope.sh's cut -f1..4 still reads what it always did",
+                len(rows) == 1 and len(rows[0]) == 7,
+                "one task row per batch, with 7 fields (task_file, design, target, "
+                "cutoff, seq_source, input_column, clash_cutoff) -- the newer ones "
+                "APPENDED, so epitope.sh's cut -f1..6 still reads what it always did",
+            )
+            check(
+                rows[0][6] == "2.5",
+                f"the clash cutoff rides LAST, default 2.5 (got {rows[0][6]!r})",
             )
             check(
                 rows[0][1] == "B" and rows[0][2] == "A" and rows[0][3] == "5.0",
@@ -383,6 +425,12 @@ def main() -> None:
                 "must be > 0",
                 "a non-positive cutoff kills the submit",
             )
+            for bad in (0.0, -1.0, float("nan")):
+                raises(
+                    lambda bad=bad: build_manifest(tmp, structures, clash_cutoff=bad),
+                    "--clash-cutoff must be a positive number",
+                    f"a --clash-cutoff of {bad} kills the submit",
+                )
 
         case("the manifest builder (failing at the cheap place)", t_manifest)
 
@@ -839,7 +887,7 @@ def main() -> None:
                 run_dir=tmp, table="table1", input_column="boltz_path",
                 force=False, gpus_per_task=1, design_chains="B",
                 target_chains="A", hotspots="A96,A99", contact_cutoff=5.0,
-                designs_per_task=20, sequence_column=None,
+                designs_per_task=20, sequence_column=None, clash_cutoff=2.5,
             )
             ctx = ManifestCtx(
                 df=df, args=args, out_dir=out_dir,
@@ -1098,6 +1146,327 @@ def main() -> None:
 
         # ============ added 2026-09-30: backward compatibility ============
 
+        # ====== added 2026-10-08: steric overlap ==========================
+        CLASH_COLS = ("min_dist_any", "n_clash", "n_clash_design_res",
+                      "clash_cutoff", "min_dist_bb", "n_clash_bb",
+                      "min_dist_bbcb", "n_clash_bbcb")
+
+        def t_clash_two_atoms():
+            """Two heavy atoms at a distance placed by hand: 2.0 A is one clash
+            pair at the default 2.5 A cutoff, 3.0 A is none (and the 3.0 A pair is
+            the H-bond / salt-bridge range, deliberately not a clash)."""
+            for d, want in ((2.0, 1), (3.0, 0)):
+                tag = f"c_two_{int(d * 10)}"
+                pdb = write_atoms(tmp / f"{tag}.pdb",
+                                  [(1, "ALA", "CA", (0.0, 0.0, 0.0))],
+                                  [(1, "GLY", "CA", (d, 0.0, 0.0))])
+                row = run_worker(tmp, pdb, tag, "A1")
+                check(row["status"] == "OK", f"{d} A: scored OK ({row['status']})")
+                check(num(row, "min_dist_any") == d,
+                      f"{d} A: min_dist_any is exactly {d} "
+                      f"(got {text(row, 'min_dist_any')})")
+                check(num(row, "n_clash") == want
+                      and num(row, "n_clash_design_res") == want,
+                      f"{d} A: n_clash {want}, n_clash_design_res {want} "
+                      f"(got {text(row, 'n_clash')}, "
+                      f"{text(row, 'n_clash_design_res')})")
+                check(num(row, "clash_cutoff") == 2.5,
+                      f"the default cutoff is echoed as 2.5 "
+                      f"(got {text(row, 'clash_cutoff')})")
+                got = collect_one(tmp, tag, row)["data"]
+                check(got["n_clash"] == want and isinstance(got["n_clash"], int)
+                      and got["min_dist_any"] == d
+                      and isinstance(got["min_dist_any"], float),
+                      f"{d} A: collected as int {want} / float {d} -- a 0 here is "
+                      f"a real zero (got {got['n_clash']!r}, "
+                      f"{got['min_dist_any']!r})")
+
+        case("overlap: two atoms at a known distance", t_clash_two_atoms)
+
+        def t_clash_pairs_vs_residues():
+            """Pairs are counted per ATOM PAIR, residues per RESIDUE. Target: one
+            atom at the origin. Design residue 1 has three atoms 1.0, 1.5 and
+            2.0 A from it (3 pairs), residue 2 two atoms 2.2 and 2.4 A away
+            (2 pairs), residue 3 one atom 6.0 A away (0 pairs)."""
+            pdb = write_atoms(
+                tmp / "c_pairs.pdb",
+                [(1, "ALA", "CA", (0.0, 0.0, 0.0))],
+                [(1, "GLY", "N", (1.0, 0.0, 0.0)),
+                 (1, "GLY", "CA", (0.0, 1.5, 0.0)),
+                 (1, "GLY", "C", (0.0, 0.0, 2.0)),
+                 (2, "GLY", "N", (-2.2, 0.0, 0.0)),
+                 (2, "GLY", "CA", (0.0, -2.4, 0.0)),
+                 (3, "GLY", "CA", (0.0, 0.0, -6.0))],
+            )
+            row = run_worker(tmp, pdb, "c_pairs", "A1")
+            check(num(row, "n_clash") == 5,
+                  f"3 + 2 = 5 atom pairs inside 2.5 A (got {text(row, 'n_clash')})")
+            check(num(row, "n_clash_design_res") == 2,
+                  f"but 2 RESIDUES, not 5 atoms (got "
+                  f"{text(row, 'n_clash_design_res')})")
+            check(num(row, "min_dist_any") == 1.0,
+                  f"min_dist_any is the 1.0 A pair (got {text(row, 'min_dist_any')})")
+            # A larger cutoff is echoed and moves the count: at 3.2 A nothing new
+            # (residue 3 is 6 A away) -- at 6.5 A residue 3 joins.
+            row = run_worker(tmp, pdb, "c_pairs65", "A1", clash_cutoff=6.5)
+            check(num(row, "clash_cutoff") == 6.5,
+                  f"the cutoff echo equals the flag (got {text(row, 'clash_cutoff')})")
+            check(num(row, "n_clash") == 6 and num(row, "n_clash_design_res") == 3,
+                  f"at 6.5 A: 6 pairs, 3 residues (got {text(row, 'n_clash')}, "
+                  f"{text(row, 'n_clash_design_res')})")
+            check(text(row, "hotspot_recall") == text(
+                      run_worker(tmp, pdb, "c_pairs25", "A1"), "hotspot_recall")
+                  and text(row, "n_contacts") == text(
+                      run_worker(tmp, pdb, "c_pairs25b", "A1"), "n_contacts"),
+                  "the clash cutoff moves NO pre-existing column")
+
+        case("overlap: pairs are atoms, n_clash_design_res is residues",
+             t_clash_pairs_vs_residues)
+
+        def t_clash_rounding_contract():
+            """n_clash == 0 exactly when min_dist_any >= cutoff, at the third
+            decimal too: an atom pair 2.49962 A apart (written coordinates
+            1.767, 1.768) rounds to 2.5 -- min_dist_any 2.5, so it is NOT a clash,
+            and the two columns cannot disagree."""
+            pdb = write_atoms(tmp / "c_round.pdb",
+                              [(1, "ALA", "CA", (0.0, 0.0, 0.0))],
+                              [(1, "GLY", "CA", (1.767, 1.768, 0.0))])
+            row = run_worker(tmp, pdb, "c_round", "A1")
+            check(num(row, "min_dist_any") == 2.5 and num(row, "n_clash") == 0,
+                  f"2.49962 A -> min_dist_any 2.5, n_clash 0 (got "
+                  f"{text(row, 'min_dist_any')}, {text(row, 'n_clash')})")
+
+        case("overlap: the 0.001 A rounding contract", t_clash_rounding_contract)
+
+        def t_clash_against_per_residue_file():
+            """min_dist_any is the minimum of the per-residue file's min_dist
+            column; it is <= min_dist_hotspot; and n_clash is 0 whenever
+            min_dist_any >= the cutoff -- across several geometries."""
+            geoms = {
+                "c_g15": write_complex(tmp / "c_g15.pdb", gap=1.5),
+                "c_g20": write_complex(tmp / "c_g20.pdb", gap=2.0),
+                "c_g40": write_complex(tmp / "c_g40.pdb", gap=4.0),
+                "c_far": write_complex(tmp / "c_far.pdb", binder_over=(108, 110),
+                                       gap=1.0),
+            }
+            for tag, path in geoms.items():
+                row = run_worker(tmp, path, tag, "A96,A99")
+                per_res = pd.read_csv(Path(str(row["path"])), sep="\t")
+                mn = float(per_res["min_dist"].min())
+                any_ = num(row, "min_dist_any")
+                check(any_ == mn,
+                      f"{tag}: min_dist_any {any_} == per-residue minimum {mn}")
+                check(any_ <= num(row, "min_dist_hotspot"),
+                      f"{tag}: min_dist_any <= min_dist_hotspot "
+                      f"({any_} <= {text(row, 'min_dist_hotspot')})")
+                check((num(row, "n_clash") == 0) == (any_ >= 2.5),
+                      f"{tag}: n_clash is 0 exactly when min_dist_any >= 2.5 "
+                      f"(n_clash {text(row, 'n_clash')}, min {any_})")
+                bb, nbb = num(row, "min_dist_bb"), num(row, "n_clash_bb")
+                check(any_ <= bb and nbb <= num(row, "n_clash")
+                      and (nbb == 0) == (bb >= 2.5),
+                      f"{tag}: min_dist_any <= min_dist_bb, n_clash_bb <= n_clash, "
+                      f"n_clash_bb 0 exactly when min_dist_bb >= 2.5 "
+                      f"(bb {bb}, n_clash_bb {nbb})")
+                cb, ncb = num(row, "min_dist_bbcb"), num(row, "n_clash_bbcb")
+                check(any_ <= cb <= bb and nbb <= ncb <= num(row, "n_clash")
+                      and (ncb == 0) == (cb >= 2.5),
+                      f"{tag}: any <= bbcb <= bb, bb <= bbcb <= all for the counts, "
+                      f"n_clash_bbcb 0 exactly when min_dist_bbcb >= 2.5 "
+                      f"(bbcb {cb}, n_clash_bbcb {ncb})")
+                check(cb == bb and ncb == nbb,
+                      f"{tag}: no CB anywhere -> the bbcb columns EQUAL the bb ones "
+                      f"({cb} vs {bb}, {ncb} vs {nbb})")
+                # write_complex is backbone-only (N, CA, C, O): identical pair sets.
+                check(bb == any_ and nbb == num(row, "n_clash"),
+                      f"{tag}: on a backbone-only design the backbone columns EQUAL "
+                      f"min_dist_any / n_clash ({bb} vs {any_}, {nbb} vs "
+                      f"{text(row, 'n_clash')})")
+            # c_far: binder 1.0 A over residues 108-110, hotspots 96/99 far away --
+            # the whole-target minimum sees the overlap that min_dist_hotspot misses.
+            row = run_worker(tmp, geoms["c_far"], "c_far2", "A96,A99")
+            check(num(row, "min_dist_any") == 1.0
+                  and num(row, "min_dist_hotspot") > 30  # 108 vs 99: 9 x 4 A
+                  and num(row, "n_clash") == 48
+                  and num(row, "n_clash_design_res") == 3,
+                  f"an overlap away from the hotspots: min_dist_any 1.0, "
+                  f"min_dist_hotspot {text(row, 'min_dist_hotspot')}, 3 residues x "
+                  f"16 pairs = 48 (got {text(row, 'n_clash')}, "
+                  f"{text(row, 'n_clash_design_res')})")
+            # Non-overlapping: a real 0, kept as 0 by the collector.
+            got = collect_one(tmp, "c_g40", run_worker(tmp, geoms["c_g40"], "c_g40",
+                                                       "A96,A99"))["data"]
+            check(got["n_clash"] == 0 and got["n_clash_design_res"] == 0,
+                  f"no overlap: n_clash 0 is a MEASURED zero (got {got['n_clash']!r})")
+
+        case("overlap: consistent with the per-residue file and the hotspot "
+             "distance", t_clash_against_per_residue_file)
+
+        def t_clash_error_and_missing_are_na():
+            """Every error row and every missing row: NA for all four, never 0.
+            And the hotspot numbering contract is exactly what it was."""
+            row = run_worker(tmp, write_complex(tmp / "c_err.pdb", gap=1.5),
+                             "c_err", "A500")
+            check(str(row["status"]).startswith("error: hotspot(s) A500 do not "
+                                                "exist in the target"),
+                  f"an absent hotspot still errors exactly as before "
+                  f"({str(row['status'])[:70]})")
+            got = collect_one(tmp, "c_err", row)
+            for col in CLASH_COLS:
+                check(got["data"][col] is None,
+                      f"{col} is NA on an error row (got {got['data'][col]!r})")
+            for tag, chains in (("c_nodes", "E"),):
+                row = run_worker(tmp, write_complex(tmp / "c_n.pdb"), tag, "A96",
+                                 design_chains=chains)
+                got = collect_one(tmp, tag, row)
+                check(all(got["data"][c] is None for c in CLASH_COLS),
+                      f"absent design chain: all four NA ({got['status'][:40]})")
+            missing_dir = tmp / "out_c_missing"
+            missing_dir.mkdir(parents=True, exist_ok=True)
+            got = collect_one(tmp, "c_missing", pd.Series(dtype=str))
+            check(got["status"] == "missing"
+                  and all(got["data"][c] is None for c in CLASH_COLS),
+                  f"no TSV at all: 'missing' with all four NA ({got['status']})")
+            # A TSV written before 2026-10-08 (no clash columns) still collects,
+            # with the four simply NA -- the backfill case.
+            row = run_worker(tmp, write_complex(tmp / "c_old.pdb"), "c_old", "A96")
+            old_dir = tmp / "out_c_pre1008"
+            old_dir.mkdir(parents=True, exist_ok=True)
+            old = pd.read_csv(tmp / "out_c_old" / "c_old.tsv", sep="\t")
+            old = old.drop(columns=list(CLASH_COLS))
+            old["name"] = "c_pre1008"
+            old.to_csv(old_dir / "c_pre1008.tsv", sep="\t", index=False)
+            got = collect_one(tmp, "c_pre1008", old.iloc[0])
+            check(got["status"] == "OK"
+                  and got["data"]["hotspot_recall"] == 1.0
+                  and all(got["data"][c] is None for c in CLASH_COLS),
+                  "a pre-2026-10-08 TSV collects its old columns, the four new "
+                  "ones NA (never 0)")
+
+        def t_clash_backbone_only_side():
+            """The design-BACKBONE columns, analytically. (a) A design side-chain
+            atom 1.5 A from a target atom, every design backbone atom >= 6 A
+            away: n_clash 1, n_clash_bb 0, min_dist_any 1.5, min_dist_bb 6.0.
+            (b) A design CA 2.0 A from a target SIDE-CHAIN atom: n_clash_bb 1.
+            (c) A design chain with no backbone-named atom: both NA, not 0."""
+            pdb = write_atoms(
+                tmp / "c_sc.pdb",
+                [(1, "ALA", "CA", (0.0, 0.0, 0.0))],
+                [(1, "SER", "N", (6.0, 0.0, 0.0)),
+                 (1, "SER", "CA", (0.0, 6.0, 0.0)),
+                 (1, "SER", "C", (0.0, 0.0, 6.0)),
+                 (1, "SER", "O", (-6.0, 0.0, 0.0)),
+                 (1, "SER", "OG", (1.5, 0.0, 0.0))],
+            )
+            row = run_worker(tmp, pdb, "c_sc", "A1")
+            check(num(row, "n_clash") == 1 and num(row, "n_clash_bb") == 0,
+                  f"(a) side-chain overlap: n_clash 1, n_clash_bb 0 (got "
+                  f"{text(row, 'n_clash')}, {text(row, 'n_clash_bb')})")
+            check(num(row, "min_dist_any") == 1.5 and num(row, "min_dist_bb") == 6.0,
+                  f"(a) min_dist_any 1.5, min_dist_bb 6.0 (got "
+                  f"{text(row, 'min_dist_any')}, {text(row, 'min_dist_bb')})")
+            got = collect_one(tmp, "c_sc", row)["data"]
+            check(got["n_clash_bb"] == 0 and isinstance(got["n_clash_bb"], int)
+                  and got["min_dist_bb"] == 6.0,
+                  f"(a) collected as int 0 (a real zero) and float 6.0 "
+                  f"(got {got['n_clash_bb']!r}, {got['min_dist_bb']!r})")
+
+            pdb = write_atoms(
+                tmp / "c_bb.pdb",
+                [(1, "LYS", "CA", (10.0, 0.0, 0.0)),
+                 (1, "LYS", "NZ", (0.0, 0.0, 0.0))],
+                [(1, "GLY", "N", (2.0, 5.0, 0.0)),
+                 (1, "GLY", "CA", (2.0, 0.0, 0.0)),
+                 (1, "GLY", "C", (2.0, -5.0, 0.0)),
+                 (1, "GLY", "O", (2.0, 0.0, 5.0))],
+            )
+            row = run_worker(tmp, pdb, "c_bb", "A1")
+            check(num(row, "n_clash_bb") == 1 and num(row, "n_clash") == 1
+                  and num(row, "min_dist_bb") == 2.0,
+                  f"(b) design CA 2.0 A from a target side-chain atom: n_clash_bb 1, "
+                  f"min_dist_bb 2.0 (got {text(row, 'n_clash_bb')}, "
+                  f"{text(row, 'min_dist_bb')})")
+            check(text(row, "min_dist_bbcb") == text(row, "min_dist_bb")
+                  and text(row, "n_clash_bbcb") == text(row, "n_clash_bb"),
+                  f"(b) a GLY design residue has no CB: bbcb equals bb "
+                  f"({text(row, 'min_dist_bbcb')}, {text(row, 'n_clash_bbcb')})")
+
+            pdb = write_atoms(
+                tmp / "c_nobb.pdb",
+                [(1, "ALA", "CA", (0.0, 0.0, 0.0))],
+                [(1, "SER", "CB", (1.0, 0.0, 0.0)),
+                 (1, "SER", "OG", (2.0, 0.0, 0.0))],
+            )
+            row = run_worker(tmp, pdb, "c_nobb", "A1")
+            got = collect_one(tmp, "c_nobb", row)
+            check(got["status"] == "OK" and got["data"]["n_clash"] == 2
+                  and got["data"]["min_dist_bb"] is None
+                  and got["data"]["n_clash_bb"] is None,
+                  f"(c) no backbone-named atoms: status OK, n_clash 2, both backbone "
+                  f"columns NA -- not 0 (got {got['data']['min_dist_bb']!r}, "
+                  f"{got['data']['n_clash_bb']!r})")
+            check(got["data"]["min_dist_bbcb"] == 1.0
+                  and got["data"]["n_clash_bbcb"] == 1,
+                  f"(c) but its CB IS in the bbcb set: min_dist_bbcb 1.0, "
+                  f"n_clash_bbcb 1 (got {got['data']['min_dist_bbcb']!r}, "
+                  f"{got['data']['n_clash_bbcb']!r})")
+
+            # (d) A design CB 1.5 A from a target atom, N/CA/C/O all 6 A away: the
+            # persistent overlap that n_clash_bb misses and n_clash_bbcb sees.
+            pdb = write_atoms(
+                tmp / "c_cb.pdb",
+                [(1, "ALA", "CA", (0.0, 0.0, 0.0))],
+                [(1, "ALA", "N", (6.0, 0.0, 0.0)),
+                 (1, "ALA", "CA", (0.0, 6.0, 0.0)),
+                 (1, "ALA", "C", (0.0, 0.0, 6.0)),
+                 (1, "ALA", "O", (-6.0, 0.0, 0.0)),
+                 (1, "ALA", "CB", (0.0, 0.0, -1.5))],
+            )
+            row = run_worker(tmp, pdb, "c_cb", "A1")
+            check(num(row, "n_clash_bb") == 0 and num(row, "n_clash_bbcb") == 1
+                  and num(row, "n_clash") >= 1,
+                  f"(d) CB overlap: n_clash_bb 0, n_clash_bbcb 1, n_clash >= 1 "
+                  f"(got {text(row, 'n_clash_bb')}, {text(row, 'n_clash_bbcb')}, "
+                  f"{text(row, 'n_clash')})")
+            check(num(row, "min_dist_bb") == 6.0 and num(row, "min_dist_bbcb") == 1.5,
+                  f"(d) min_dist_bb 6.0, min_dist_bbcb 1.5 (got "
+                  f"{text(row, 'min_dist_bb')}, {text(row, 'min_dist_bbcb')})")
+
+            # (e) No atom of either set (a side-chain-only fragment without CB):
+            # every backbone reading NA, never 0.
+            pdb = write_atoms(
+                tmp / "c_noset.pdb",
+                [(1, "ALA", "CA", (0.0, 0.0, 0.0))],
+                [(1, "SER", "OG", (2.0, 0.0, 0.0))],
+            )
+            got = collect_one(tmp, "c_noset", run_worker(tmp, pdb, "c_noset", "A1"))
+            check(got["status"] == "OK" and got["data"]["n_clash"] == 1
+                  and all(got["data"][c] is None for c in
+                          ("min_dist_bb", "n_clash_bb", "min_dist_bbcb",
+                           "n_clash_bbcb")),
+                  f"(e) no N/CA/C/O/OXT/CB atom: all four backbone columns NA "
+                  f"({got['status']}, n_clash {got['data']['n_clash']!r})")
+
+        case("overlap: the design BACKBONE against every target atom",
+             t_clash_backbone_only_side)
+
+        case("overlap: NA on error and missing rows, never 0",
+             t_clash_error_and_missing_are_na)
+
+        def t_clash_flag_is_validated():
+            """The worker refuses a non-positive or non-numeric --clash-cutoff
+            (argparse exits); the builder refusal is in the manifest case."""
+            for bad in ("0", "-1", "nan", "abc"):
+                try:
+                    run_worker(tmp, write_complex(tmp / "c_v.pdb"), "c_v", "A96",
+                               clash_cutoff=bad)  # type: ignore[arg-type]
+                    refused = False
+                except SystemExit:
+                    refused = True
+                check(refused, f"worker refuses --clash-cutoff {bad}")
+
+        case("overlap: --clash-cutoff is validated", t_clash_flag_is_validated)
+
         def t_backward_compatible():
             """With --sequence-column omitted, every pre-existing column is what it
             was. The reference values are the ones the pre-edit tool produced for
@@ -1172,8 +1541,12 @@ def main() -> None:
             check(
                 result_cols[len(pre_2026_10_02):]
                 == ["hotspot_n_contacts", "hotspot_contact_frac",
-                    "hotspot_contacts"],
-                f"and the only change is the three appended columns "
+                    "hotspot_contacts",
+                    # appended 2026-10-08, after the 2026-10-02 three
+                    "min_dist_any", "n_clash", "n_clash_design_res",
+                    "clash_cutoff", "min_dist_bb", "n_clash_bb",
+                    "min_dist_bbcb", "n_clash_bbcb"],
+                f"and the only changes are appended columns, in order "
                 f"(got {result_cols[len(pre_2026_10_02):]})",
             )
             # A per-design TSV written by the PRE-2026-10-02 tool -- i.e. one

@@ -8,11 +8,85 @@ by hbdesigner_worker.py and mints one child row per kept network, keyed
 lineage. Nothing from the ancestors is copied -- resolve it with ``lookup`` when you
 need it.
 
-Columns (leaf-prefixed ``hbdesigner_``):
+Columns (leaf-prefixed ``hbdesigner_``). The three TRUST columns come first:
+``resnum_shift_max`` (is the mpnn mapping unshifted), ``pdb_parser`` (which reader
+produced that mapping) and ``guide_atoms_removed`` (was the --guide_res marker
+atom taken out of the file the row points at).
+
+    resnum_shift_max      max |mpnn position - PDB resnum| over the network
+                          residues. 0 = no renumbering happened, so `network`'s
+                          resnums ARE the mpnn positions. Higher = more shift;
+                          any non-zero value means read `resnum_offset` before
+                          trusting a hand-off.
+    pdb_parser            which reader produced the residue mapping: 'gemmi'
+                          (Modal, and anywhere gemmi is importable) or
+                          'biopython' (the fallback used in the vib conda env,
+                          which has no gemmi). Not a quality score -- the two
+                          agree on the standard 20 amino acids -- but they do NOT
+                          agree on every residue name (39 names only gemmi calls
+                          an amino acid, 942 only Biopython, and PCA is E to one
+                          and Q to the other), so n_res_total can be reader-
+                          dependent for a file containing one. Gate a
+                          cross-backend comparison on this column.
+    guide_atoms_removed   HETATM lines removed from this rank's PDB because they
+                          were HBDesigner's --guide_res marker atom (resname ORI
+                          AND atom name V1, element V). 0 = the file was checked
+                          and had none (the normal case without --guide-res);
+                          1 = the marker was taken out and the file as HBDesigner
+                          wrote it kept under <design>/guide_raw/. Upstream adds
+                          exactly one, so a value ABOVE 1 means the output does
+                          not match the code this tool was built against -- it is
+                          reported, not capped. NA = the strip pass did not run or
+                          failed, so the file MAY still carry the marker -- NA is
+                          not 0 here. Collect prints a count of the NA rows.
+
+    fold_sequence        THE SEQUENCE A PREDICTOR MAY FOLD, and the reason this
+                          tool is worth running on an already-designed binder. It
+                          is the STAGED INPUT's binder-chain sequence with the
+                          network's binder positions overwritten by the network
+                          residues -- it keeps every residue the input already
+                          had and changes only the network. `path` cannot be
+                          folded (poly-glycine); this can. NA when the binder
+                          chain cannot be identified or a check failed -- NEVER
+                          an empty string, which would read as a binder with no
+                          residues. Its quality is bounded by the staged input:
+                          if that was poly-glycine, so is this.
+    n_fold_changes       how many of the network's binder positions differ from
+                          the staged input's residue there. 0 is legitimate (the
+                          network re-chose what was already there); higher means
+                          more of the binder moved. Not a quality score.
+    fold_chain           the chain fold_sequence belongs to: the single network
+                          chain NOT in --omit-chains. NA with the other two.
+    centers               the designed HISTIDINES on the binder, in hisbond's
+                          centres format: '<index0>:HIS' joined by ';', e.g.
+                          '11:HIS;19:HIS'. index0 is 0-BASED INTO fold_sequence
+                          (hence into the binder chain in file order), NOT a
+                          residue number. The token is always a bare 'HIS':
+                          hbdesigner designs the residue, not its protonation
+                          state, so HIS-S / HIS-P would assert something it has
+                          not measured. NA -- NEVER '' -- when the network put no
+                          histidine on the binder; filter with .notna(), not
+                          != ''. NO TOOL CONSUMES THIS CELL: hisbond's --centers
+                          now takes 1-BASED positions as plain integers through
+                          {expr} islands, and a packed string cannot ride through
+                          one. Until hbdesigner publishes numeric position
+                          columns, read the positions off here by hand and ADD 1.
+    n_centers             how many such histidines. 0 IS A MEASUREMENT (this
+                          network designed none) and pairs with centers NA. Both
+                          are NA together only when fold_sequence is NA, i.e.
+                          when there is no binder chain to index into at all.
+    fold_seq_note        NA when the fold sequence was built; otherwise the
+                          reason it was not. A row can be OK and still have no
+                          fold sequence -- the commonest case is a network that
+                          lands on two chains with neither omitted, so which one
+                          is the binder is genuinely unknown. (A MONOMER run does
+                          get a sequence: its one network chain is trivially the
+                          only candidate.) This column says which case it was.
 
     path                  the designed structure. The GRAFTED file when chains were
                           grafted back, otherwise the raw rank PDB. Poly-glycine
                           everywhere except the network -- by design, not corruption.
+                          DO NOT FOLD THIS; fold `fold_sequence`.
     rank                  1 = best by HBDesigner's own ordering (fewest buried
                           unsats, then highest saturation, then lowest HB_Score_full)
     hb_score_full         ref2015 energy of the network, per network residue,
@@ -52,10 +126,7 @@ Columns (leaf-prefixed ``hbdesigner_``):
                           is constant over that chain, else '<chain>:var'. All
                           zeroes means the PDB was numbered 1..L per chain and
                           `network`'s resnums ARE the mpnn positions.
-    resnum_shift_max      max |mpnn position - PDB resnum| over the network
-                          residues. 0 = no renumbering happened. The filterable
-                          form of the trust check above.
-    grafted               'yes' if the omitted chains were restored from the input
+    grafted             'yes' if the omitted chains were restored from the input
                           PDB (upstream graft_seq.py), 'no' otherwise.
     graft_identity        fraction of the grafted chains' residues that now match
                           the input. 1.0 = fully restored; NA when nothing was
@@ -103,6 +174,9 @@ INT_COLUMNS = [
     "n_network_res",
     "resnum_shift_max",
     "n_res_total",
+    "guide_atoms_removed",
+    "n_fold_changes",
+    "n_centers",
 ]
 STR_COLUMNS = [
     "network",
@@ -111,6 +185,11 @@ STR_COLUMNS = [
     "fixed_positions",
     "resnum_offset",
     "grafted",
+    "pdb_parser",
+    "fold_sequence",
+    "fold_chain",
+    "fold_seq_note",
+    "centers",
 ]
 # `fixed_idx` is exploded into fix1..fixK instead of being collected as a column.
 DATA_COLUMNS = FLOAT_COLUMNS + INT_COLUMNS + STR_COLUMNS
@@ -143,12 +222,78 @@ def _fields(row: dict[str, str]) -> dict[str, Any]:
     return data
 
 
+def _print_trust_counts(out_dir: Path) -> None:
+    """One scan of every per-design TSV, two count lines about the trust columns.
+
+    The counts exist so an NA is never read as a zero: ``guide_atoms_removed`` is
+    NA only when the guide-atom strip pass did not run or failed, and a row read
+    by Biopython was produced by a different parser from a row read by gemmi
+    (Modal has gemmi, the vib conda env does not).
+    """
+    parsers: dict[str, int] = {}
+    changes: dict[int, int] = {}
+    centres: dict[int, int] = {}
+    notes: dict[str, int] = {}
+    ok_rows = no_strip = with_seq = with_centres = 0
+    for tsv in sorted(out_dir.glob("*.tsv")):
+        try:
+            with open(tsv, newline="") as f:
+                rows = list(csv.DictReader(f, delimiter="\t"))
+        except OSError:
+            continue
+        for row in rows:
+            if (_value(row, "status") or "") != "OK":
+                continue
+            ok_rows += 1
+            parsers[_value(row, "pdb_parser") or "unrecorded"] = (
+                parsers.get(_value(row, "pdb_parser") or "unrecorded", 0) + 1
+            )
+            if _value(row, "guide_atoms_removed") is None:
+                no_strip += 1
+            if _value(row, "fold_sequence") is not None:
+                with_seq += 1
+                n = _value(row, "n_fold_changes")
+                if n is not None:
+                    key = int(float(n))
+                    changes[key] = changes.get(key, 0) + 1
+                nc = _value(row, "n_centers")
+                if nc is not None:
+                    ckey = int(float(nc))
+                    centres[ckey] = centres.get(ckey, 0) + 1
+                if _value(row, "centers") is not None:
+                    with_centres += 1
+            else:
+                note = _value(row, "fold_seq_note") or "no reason recorded"
+                notes[note] = notes.get(note, 0) + 1
+    summary = ", ".join(f"{n} {name}" for name, n in sorted(parsers.items())) or "none"
+    print(f"hbdesigner: {ok_rows} OK row(s) on disk; PDB reader: {summary}")
+    print(
+        f"hbdesigner: {no_strip} of {ok_rows} OK row(s) carry NO guide-atom strip "
+        f"record (guide_atoms_removed is NA, which is not 0)"
+    )
+    dist = ", ".join(f"{k}:{v}" for k, v in sorted(changes.items())) or "none"
+    print(
+        f"hbdesigner: {with_seq} of {ok_rows} OK row(s) have a fold_sequence "
+        f"(the foldable one); n_fold_changes distribution: {dist}"
+    )
+    cdist = ", ".join(f"{k}:{v}" for k, v in sorted(centres.items())) or "none"
+    print(
+        f"hbdesigner: {with_centres} of {with_seq} row(s) with a fold_sequence "
+        f"carry designed histidine centres (hisbond-ready); n_centers "
+        f"distribution: {cdist}"
+    )
+    for note, n in sorted(notes.items(), key=lambda kv: -kv[1]):
+        print(f"hbdesigner:   {n} OK row(s) have NO fold_sequence -- {note}")
+
+
 def collect_hbdesigner(ctx: CollectCtx) -> CollectEach:
     """Per-parent hbdesigner collector. hbdesigner is a create tool: the framework
     iterates the ready parents and this mints one child row per kept network
     (``<parent>_hb<rank>``), carrying ``parent`` for lineage. The framework stamps
     status/path/parent_name from each Collected. Rows are rebuilt from disk on every
     collect, so re-collecting is idempotent."""
+
+    _print_trust_counts(ctx.out_dir)
 
     def one(d: DesignCtx) -> Iterable[Collected]:
         tsv_path = ctx.out_dir / f"{d.name}.tsv"

@@ -1,69 +1,28 @@
-"""Submit tasks running AtomiUM on designs, spawning a new child table.
+"""Submit AtomiUM (a ProteinMPNN-like designer) on designs, spawning a child table.
 
-AtomiUM is a ProteinMPNN-like sequence designer (a PyG re-implementation with
-noise-conditioned weights), and it ships ProteinMPNN's own helper scripts under
-``proteinMPNN_helper_scripts/`` (on Modal; off Modal the activation script supplies
-the helper directory, see ``atomium.sh``). Its jsonl interface is the same one
-(``--jsonl_path``, ``--chain_id_jsonl``, ``--fixed_positions_jsonl``,
-``--tied_positions_jsonl``, ``--bias_AA_jsonl``), so this builder is deliberately
-the proteinmpnn builder with the same two mini-languages and the same batching:
-designs whose params are identical -- the signature ``(chains, fixed_positions,
-tie_mode, tied_positions)`` -- are grouped into a single batched ``atomium.py``
-call (model loaded once), and groups are bin-packed onto tasks up to
-``--designs-per-task`` designs each.
+Same jsonl interface and the same two mini-languages as the proteinmpnn tool. Designs
+with an identical ``(chains, fixed_positions, tie_mode, tied_positions)`` signature
+share one batched ``atomium.py`` call (see ``atomium.sh``), and groups are bin-packed
+onto tasks of at most ``--designs-per-task`` designs. Flags and traps are in
+``.claude/skills/atomium/SKILL.md``.
 
-The pipeline (``parse_multiple_chains`` -> optional helper steps -> ``atomium.py``)
-runs inline in ``atomium.sh``, once per group.
+* ``--chains-to-design``: ``A:C,E`` -> "A B C E" (``:`` is an inclusive range).
+* ``--fixed-positions`` / ``--tied-positions``: ``/`` breaks chains (one group per
+  designed chain), ``,`` separates fragments, ``a:b`` is inclusive, ``{...}`` resolves
+  a table column up the lineage. 1-indexed per parsed chain, NOT PDB numbering.
+* ``--symmetry auto|N``: ties all chains and lets one position group describe a single
+  asymmetric unit; exclusive with ``--tied-positions``.
 
-Chain mini-language (``--chains-to-design``): the chains you design, in ProteinMPNN
-order. ``:`` is an inclusive letter range, ``,`` separates:
-
-    --chains-to-design A:C,E     # -> "A B C E"
-    --chains-to-design A,C        # -> "A C" (non-contiguous)
-    --chains-to-design ''         # design all chains (default)
-
-Position mini-language (``--fixed-positions`` / ``--tied-positions``): ``/`` breaks
-chains (its groups map one-to-one onto ``--chains-to-design``, in order), ``,``
-separates fragments within a chain, ``start:end`` expands inclusively, a single
-position passes through; table column expressions live in ``{...}`` islands (resolved
-up the lineage with ``+ - * //`` arithmetic), everything else is a literal integer:
-
-    --fixed-positions 9:23/10,11,18:20,22    # -> "9 10 ... 23, 10 11 18 19 20 22"
-    --tied-positions  1:8/1:8                # -> "1 2 3 4 5 6 7 8, 1 2 3 4 5 6 7 8"
-
-Positions are 1-indexed within each parsed chain (every chain is renumbered to
-1..L), NOT original PDB numbering.
-
-Symmetry (``--symmetry auto|N``): ties all chains via ``make_tied_positions_dict
---homooligomer 1``, and makes the position mini-language describe a single
-asymmetric unit (a lone group is broadcast across the designed chains). ``auto``
-takes the order from the input's polymer chain count. Mutually exclusive with
-``--tied-positions``.
-
-What differs from the proteinmpnn tool, all verified against the checkout:
-
-  * ``--model-noise`` picks the weights (``model_noised_=_<noise>.pt``) and replaces
-    ProteinMPNN's model-name/backbone-noise knobs. AtomiUM has no ``--ca_only``,
-    ``--use_soluble_model``, ``--save_score`` or ``--save_probs``.
-  * This tool exposes no ``--batch-size``. CORRECTED 2026-10-11: ``atomium.py``'s own
-    ``--batch_size`` was DEAD at commit 292e29c, which is what this note used to say,
-    but it is LIVE at the pinned commit dee5a4d67ae02293cee59f86c86085c8fa11879d --
-    default 0, meaning chunks are created dynamically up to the maximum node budget.
-    It affects CHUNKING ONLY. The sampling count is unchanged and is still
-    ``num_seq_per_target * len(temperatures)``.
-  * ``--sampling-temp`` may carry SEVERAL temperatures, and each one produces a full
-    ``--num-seq-per-target`` set (so N temps => N x num_seq sequences per design).
-    It therefore travels as its own manifest field and is quoted in the task script;
-    folding it into the unquoted argv tail would split "0.1 0.2" into two arguments.
-  * ``--seed 0`` means "pick a random seed" (AtomiUM treats 0 as falsy).
+Differs from proteinmpnn: ``--model-noise`` picks the weights; no ``--ca_only``,
+``--use_soluble_model``, ``--save_score``, ``--save_probs`` or ``--batch-size``
+(upstream's flag only chunks, and is live or dead depending on the pinned commit);
+``--sampling-temp`` may hold several temperatures, each giving a full
+``--num-seq-per-target`` set, so it travels as its own quoted manifest field;
+``--seed 0`` means a random seed.
 
 Usage:
     sapia run atomium outputs/<run> --table table0 --table-label atomium \\
         --model-noise n05 --num-seq-per-target 8
-
-    # scan two noise levels as two runs into two child tables
-    sapia run atomium outputs/<run> -t table0 --table-label n03 --model-noise n03
-    sapia run atomium outputs/<run> -t table0 --table-label n05 --model-noise n05
 """
 
 import json
@@ -85,9 +44,7 @@ from prosapia.utils import (
     polymer_chain_names,
 )
 
-# The weight files shipped in the checkout: model_weights/model_noised_=_<noise>.pt.
-# Guarded up front because a typo would otherwise burn a GPU container per design
-# before torch.load raises.
+# Weights in the checkout; checked up front so a typo cannot burn a GPU container.
 MODEL_NOISES = ("n00", "n01", "n02", "n03", "n04", "n05", "n05_v2", "n06", "n07")
 
 
@@ -119,11 +76,8 @@ def _parse_positions(
 ) -> str:
     """Expand the position mini-language into a ``--position_list``.
 
-    Per-chain groups joined by ``", "``, positions within a group by spaces. Order is
-    preserved and NOT de-duplicated (tied positions are index-parallel). Empty spec
-    -> "". ``broadcast_to`` (set from ``--symmetry``) replicates a spec describing a
-    SINGLE asymmetric unit across that many chains; any other group count passes
-    through untouched.
+    Order is kept and not de-duplicated (tied positions are index-parallel). A lone
+    group is replicated ``broadcast_to`` times (``--symmetry``); other counts pass.
     """
     groups = parse_positions(spec, lookup, name)
     if broadcast_to and len(groups) == 1:
@@ -171,11 +125,9 @@ def _check_sampling_temp(spec: str) -> None:
 
 
 def _resolve_chains(args: AtomiumArgs, pdb_src: Path) -> str:
-    """One design's designed-chain list, as a ``--chain_list`` string.
+    """One design's chain list: ``--chains-to-design``, else ``--symmetry``, else all.
 
-    ``--chains-to-design`` wins when given. Otherwise ``--symmetry`` derives the list
-    from the structure itself -- the first ``order`` polymer chains, where ``auto``
-    takes every one. With neither flag, "" leaves every chain designed.
+    ``--symmetry`` takes the first ``order`` polymer chains (``auto``: every one).
     """
     if args.chains_to_design:
         return _parse_chains(args.chains_to_design)
@@ -187,11 +139,7 @@ def _resolve_chains(args: AtomiumArgs, pdb_src: Path) -> str:
 
 
 def _write_bias_jsonl(spec: str, out_dir: Path) -> str:
-    """Write a global AA-bias jsonl from an ``AA:bias`` spec; return its path.
-
-    ``make_bias_AA.py`` is purely generative (no structure input), so the dict is
-    written directly and the AtomiUM env is not needed on the submit node.
-    """
+    """Write the global AA-bias jsonl from an ``AA:bias`` spec; return its path."""
     spec = spec.strip()
     if not spec:
         return ""
@@ -214,11 +162,9 @@ def _write_bias_jsonl(spec: str, out_dir: Path) -> str:
 
 
 def _atomium_extra(args: AtomiumArgs, bias_path: str) -> str:
-    """The run-wide atomium.py argv tail (same for every design).
+    """The run-wide ``atomium.py`` argv tail, whitespace-free (expanded unquoted).
 
-    Whitespace-free by construction: the task script expands this unquoted so each
-    token becomes its own argv entry. ``--sampling_temp`` is NOT here -- it may hold
-    several space-separated temperatures and travels as its own quoted field.
+    ``--sampling_temp`` may hold several values, so it travels as its own quoted field.
     """
     parts = [
         "--model_noise",
@@ -234,19 +180,14 @@ def _atomium_extra(args: AtomiumArgs, bias_path: str) -> str:
     return " ".join(parts)
 
 
-# A design ready to run, and the (chains, fixed_positions, tie_mode, tied_positions)
-# signature that decides which designs can share one batched atomium.py call.
+# Signature: designs sharing (chains, fixed, tie_mode, tied) share one batched call.
 Member = tuple[str, Path]  # (design_name, staged_pdb_source)
 Signature = tuple[str, str, str, str]
 Subgroup = tuple[Signature, list[Member]]
 
 
 def _pack_subgroups(chunks: list[Subgroup], max_per_task: int) -> list[list[Subgroup]]:
-    """First-fit-pack subgroup chunks (each <= max_per_task) into tasks.
-
-    Each task holds at most ``max_per_task`` designs total, possibly spanning several
-    signatures; every subgroup stays intact so batching is preserved.
-    """
+    """First-fit-pack subgroup chunks into tasks of at most ``max_per_task`` designs."""
     tasks: list[list[Subgroup]] = []
     remaining: list[int] = []
     for chunk in chunks:
@@ -263,19 +204,14 @@ def _pack_subgroups(chunks: list[Subgroup], max_per_task: int) -> list[list[Subg
 
 
 def _symlink_member(pdb_src: Path, inputs_dir: Path, name: str) -> None:
-    """Symlink a staged design into ``inputs_dir`` as ``<name>.pdb`` (no copy).
-
-    The stem is what collect keys lineage off: AtomiUM names each output FASTA after
-    the parsed input, so ``<name>.pdb`` -> ``seqs/<name>.fa`` -> parent row ``name``.
-    """
+    """Symlink a staged design as ``<name>.pdb``: the stem is the parent row name."""
     link = inputs_dir / f"{name}.pdb"
     if not link.exists() and not link.is_symlink():
         link.symlink_to(pdb_src)
 
 
 def build_atomium_manifest(ctx: ManifestCtx[AtomiumArgs]) -> list[tuple[str, ...]]:
-    # A present input --input-column (ctx.ready) already implies the upstream step
-    # succeeded (collect writes a _path only on status OK), so no extra prefilter.
+    # ctx.ready already implies upstream success (collect writes a _path only on OK).
     ready = ctx.ready
 
     # Run-wide pieces (all structure-independent): argv tail and the bias jsonl.
@@ -302,16 +238,13 @@ def build_atomium_manifest(ctx: ManifestCtx[AtomiumArgs]) -> list[tuple[str, ...
             "chains and broadcast one group across them"
         )
 
-    # Stage each design (CIF->PDB via the shared cache; PDBs returned as-is) and
-    # compute its signature. Positions may resolve per-design via lineage, so grouping
-    # by signature lets same-param designs share one batched atomium.py call.
+    # Stage each design (CIF->PDB via the shared cache), grouped by signature.
     groups: dict[Signature, list[Member]] = defaultdict(list)
     for design_name in sorted(cast(str, n) for n in ready.index):
         input_path = Path(str(ready.at[design_name, ctx.args.input_column]))
         pdb_src = volume_path(ensure_pdb(input_path, ctx.args.run_dir))
         chains = _resolve_chains(ctx.args, pdb_src)
-        # Under --symmetry a lone position group describes one asymmetric unit and is
-        # replicated across the designed chains (the helper wants one group per chain).
+        # Under --symmetry a lone position group is replicated across the chains.
         broadcast = len(chains.split()) if ctx.args.symmetry is not None else None
         fixed_pl = _parse_positions(
             ctx.args.fixed_positions,
@@ -331,8 +264,7 @@ def build_atomium_manifest(ctx: ManifestCtx[AtomiumArgs]) -> list[tuple[str, ...
         sig: Signature = (chains, fixed_pl, tie_mode, tied_pl)
         groups[sig].append((design_name, pdb_src))
 
-    # Split each signature group into subgroups of <= X, then bin-pack subgroups into
-    # tasks with a total budget of X designs each.
+    # Split signature groups into subgroups of <= x, then bin-pack them into tasks.
     x = ctx.args.designs_per_task
     chunks: list[Subgroup] = []
     for sig, members in groups.items():
@@ -340,8 +272,7 @@ def build_atomium_manifest(ctx: ManifestCtx[AtomiumArgs]) -> list[tuple[str, ...
             chunks.append((sig, members[i : i + x]))
     tasks = _pack_subgroups(chunks, x)
 
-    # Materialize: one grp_<g>/ output dir per subgroup (inputs/ holds symlinks), one
-    # sub-manifest per task (a row per subgroup), and a 1-field top-level row per task.
+    # One grp_<g>/ dir per subgroup, one sub-manifest per task, one row per task.
     tasks_dir = ctx.out_dir / "atomium_tasks"
     tasks_dir.mkdir(parents=True, exist_ok=True)
     manifest_rows: list[tuple[str, ...]] = []

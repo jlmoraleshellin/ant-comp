@@ -5,7 +5,8 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Progress ledger</title>
 <style>
-/* Styles for the progress ledger. Loaded by every campaigns/*_progress.html next to ledger.js. */
+/* Styles for the progress ledger. The page is self-contained: this block and the script below
+   must stay inline, because VS Code's HTML Preview under Remote-WSL mangles relative paths. */
 :root{
   --bg:#fafaf9;--panel:#fff;--ink:#1c1917;--mute:#78716c;--line:#e7e5e4;--rail:#c4bfba;
   --ok:#15803d;--ok-bg:#dcfce7;--bad:#b91c1c;--bad-bg:#fee2e2;--run:#b45309;--run-bg:#fef3c7;
@@ -20,7 +21,7 @@
 *{box-sizing:border-box}
 html{color-scheme:light dark}
 body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
-main,header,.toolbar,footer{max-width:62rem;margin:0 auto;padding:0 16px}
+main,header,.toolbar,footer{max-width:68rem;margin:0 auto;padding:0 16px}
 header{padding-top:24px}
 h1{font-size:1.25rem;margin:0 0 .25rem;font-weight:650;overflow-wrap:anywhere}
 .goal{margin:0 0 1rem;color:var(--mute)}
@@ -39,17 +40,17 @@ header summary{cursor:pointer}
 .toolbar button{font:inherit;font-size:.85rem;padding:3px 10px;border:1px solid var(--line);background:var(--panel);color:var(--ink);border-radius:6px;cursor:pointer}
 .toolbar button[aria-pressed=true]{border-color:var(--accent);color:var(--accent)}
 .toolbar button:hover{border-color:var(--mute)}
+.toolbar .sep{width:1px;align-self:stretch;background:var(--line)}
 .legend{margin-left:auto;color:var(--mute);font-size:.78rem}
 main{padding-bottom:48px}
 .empty{color:var(--mute);padding:24px 0}
 
-/* tree */
+/* ---- tree of tables --------------------------------------------------- */
 .node{position:relative;padding-left:28px}
 .node::before{content:"";position:absolute;left:9px;top:0;bottom:0;border-left:2px solid var(--rail)}
 .node.first::before{top:14px}
 .node.last::before{bottom:auto;height:14px}
 .node.first.last::before{display:none}
-.node.first.last.solo{padding-bottom:0}
 .row{display:flex;align-items:flex-start;gap:4px;min-height:28px}
 .dot{position:absolute;left:0;top:4px;width:20px;height:20px;border-radius:50%;display:grid;place-items:center;
   font-size:11px;font-weight:700;border:2px solid var(--idle);background:var(--idle-bg);color:var(--idle);z-index:1}
@@ -62,21 +63,47 @@ main{padding-bottom:48px}
 .caret{flex:none;width:22px;height:28px;border:0;background:none;color:var(--mute);cursor:pointer;font-size:.8rem;padding:0}
 .caret:hover{color:var(--ink)}
 .caret.none{visibility:hidden;cursor:default}
-.head{flex:1;min-width:0;display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 8px;text-align:left;font:inherit;color:inherit;
+.head{flex:1;min-width:0;display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px;text-align:left;font:inherit;color:inherit;
   background:none;border:0;border-radius:6px;padding:3px 8px;cursor:pointer}
 .head:hover{background:var(--panel)}
 .node[data-open=true]>.row .head{background:var(--panel)}
-.num{color:var(--mute);font-variant-numeric:tabular-nums;min-width:1.6em;text-align:right}
+.sid{color:var(--mute);font-family:var(--mono);font-size:.78rem;font-variant-numeric:tabular-nums}
 .tool{font-weight:600}
+.arrow{color:var(--rail)}
+.tname{font-family:var(--mono);font-size:.84rem;font-weight:600;color:var(--accent)}
+.tname.ghost{color:var(--mute);font-weight:500}
 .chip{font-family:var(--mono);font-size:.78rem;padding:0 6px;border-radius:4px;border:1px solid var(--line);background:var(--panel);color:var(--mute)}
-.chip.new{color:var(--accent);border-color:var(--accent)}
 .chip.lab{font-family:inherit;font-style:italic}
 .headline{color:var(--mute);font-size:.9rem;overflow-wrap:anywhere}
 .tag{font-size:.75rem;padding:0 6px;border-radius:999px}
 .tag.warn{color:var(--run);background:var(--run-bg)}
-.tag.fork{color:var(--accent);border:1px solid var(--accent)}
 .tag.hidden{color:var(--mute);border:1px dashed var(--mute)}
-.detail{margin:2px 0 10px 26px;padding:10px 14px;background:var(--panel);border:1px solid var(--line);border-radius:8px}
+.tag.note{color:var(--mute);border:1px solid var(--line)}
+
+/* annotation strip: the update steps folded onto their table */
+.ann{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 6px;margin:0 0 4px 30px;font-size:.8rem}
+.ann .lbl{color:var(--rail);font-size:.78rem}
+.ann button{font:inherit;font-family:var(--mono);font-size:.78rem;padding:0 6px;border:1px solid var(--line);
+  background:var(--panel);color:var(--mute);border-radius:4px;cursor:pointer}
+.ann button:hover{border-color:var(--accent);color:var(--accent)}
+.ann button.done{border-color:var(--line)}
+.ann button.failed{border-color:var(--bad);color:var(--bad)}
+.ann button.partial{border-color:var(--part);color:var(--part)}
+.ann button.running{border-color:var(--run);color:var(--run)}
+.ann button em{font-style:italic;font-family:inherit;opacity:.85}
+
+/* panel: the steps behind one table */
+.panel{margin:2px 0 10px 30px;padding:4px 0 0;border-left:2px solid var(--line);padding-left:12px}
+.panel h3{font-size:.76rem;text-transform:uppercase;letter-spacing:.04em;color:var(--mute);margin:8px 0 3px;font-weight:600}
+.sstep{margin:0 0 2px}
+.sstep>button{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px;width:100%;text-align:left;font:inherit;
+  background:none;border:0;border-radius:6px;padding:2px 6px;color:inherit;cursor:pointer}
+.sstep>button:hover{background:var(--panel)}
+.sstep.target>button{background:var(--hit)}
+.sstep .gl{font-size:.8rem;width:1em;text-align:center}
+.sstep .gl.done{color:var(--ok)}.sstep .gl.failed{color:var(--bad)}
+.sstep .gl.partial{color:var(--part)}.sstep .gl.running{color:var(--run)}
+.detail{margin:2px 0 8px 22px;padding:10px 14px;background:var(--panel);border:1px solid var(--line);border-radius:8px}
 .detail dl{display:grid;grid-template-columns:8.5rem 1fr;gap:5px 12px;margin:0;font-size:.88rem}
 .detail dt{color:var(--mute)}
 .detail dd{margin:0;overflow-wrap:anywhere}
@@ -86,16 +113,48 @@ main{padding-bottom:48px}
 .detail button.copy{font:inherit;font-size:.75rem;margin-top:4px;padding:1px 8px;border:1px solid var(--line);background:none;color:var(--mute);border-radius:4px;cursor:pointer}
 .detail a{color:var(--accent)}
 .detail ul{margin:0;padding-left:1.1em}
+.more{font:inherit;font-size:.78rem;margin-left:6px;padding:0;border:0;background:none;color:var(--accent);cursor:pointer}
 .after[hidden]{display:none}
 .branches{margin-left:28px}
 .branch{position:relative}
 .branch::before{content:"";position:absolute;left:-19px;top:0;width:19px;height:14px;border-left:2px solid var(--rail);border-bottom:2px solid var(--rail);border-bottom-left-radius:8px}
 .branch:not(:last-child)::after{content:"";position:absolute;left:-19px;top:14px;bottom:0;border-left:2px solid var(--rail)}
+
+/* a merge: the rail runs down its source rows in the accent colour and closes on the merge row */
+.branch.feeds::before,.branch.feeds::after{border-color:var(--accent)}
+.branch.join::before{border-color:var(--accent);border-left-width:3px;border-bottom-width:3px}
+.tag.join{color:var(--accent);border:1px solid var(--accent)}
+.ann.src .lbl{color:var(--mute);font-style:italic}
+.srcchip{font:inherit;font-family:var(--mono);font-size:.78rem;padding:0 6px;border:1px solid var(--accent);
+  background:var(--panel);color:var(--accent);border-radius:4px;cursor:pointer}
+.srcchip:hover{background:var(--hit)}
 .node.target>.row .head{background:var(--hit)}
-.node.dim>.row{opacity:.35}
-@media (max-width:560px){.detail dl{grid-template-columns:1fr}.legend{margin-left:0}}
+.node.dim>.row,.sstep.dim>button{opacity:.35}
+
+/* lineage graph */
+.graphwrap{overflow-x:auto;border:1px solid var(--line);border-radius:8px;background:var(--panel);padding:4px}
+.graphwrap svg{display:block}
+.gedge{fill:none;stroke:var(--rail);stroke-width:1.5}
+.gmerge{stroke:var(--accent);stroke-width:2}
+.gnode{cursor:pointer}
+.gnode rect{fill:var(--bg);stroke:var(--rail);stroke-width:1.5}
+.gnode text{font-family:var(--mono);font-size:11px;fill:var(--ink)}
+.gnode .gcount{fill:var(--mute);font-size:11px}
+.gnode:hover rect,.gnode:focus rect{fill:var(--hit)}
+.gnode:focus{outline:none}
+.gnode:focus rect{stroke:var(--accent);stroke-width:2.5}
+.gnode.done rect{stroke:var(--ok)}
+.gnode.partial rect{stroke:var(--part)}
+.gnode.failed rect{stroke:var(--bad)}
+.gnode.running rect{stroke:var(--run)}
+.gnode.ghost rect{stroke-dasharray:4 3}
+.ghint{color:var(--mute);font-size:.8rem;margin:8px 2px 0}
+
+/* chronological view */
+.steplist{margin:0;padding:0;list-style:none}
+.steplist .sstep{border-bottom:1px solid var(--line);padding:2px 0}
+@media (max-width:620px){.detail dl{grid-template-columns:1fr}.legend{margin-left:0}}
 footer{color:var(--mute);font-size:.78rem;padding-bottom:32px}
-.facts .more{font:inherit;font-size:.78rem;margin-left:6px;padding:0;border:0;background:none;color:var(--accent);cursor:pointer}
 
 /* fallback look, used only while the script below has not run; the script hides #ledger and removes #fallback when it succeeds */
 #ledger{display:block;white-space:pre-wrap;word-break:break-all;font:12px/1.45 ui-monospace,Menlo,Consolas,monospace;margin:0 16px 16px;padding:10px 14px;border:1px dashed #888}
@@ -132,6 +191,11 @@ footer{color:var(--mute);font-size:.78rem;padding-bottom:32px}
     return e;
   }
   var has = function (v) { return v != null && v !== ""; };
+  // A table-valued key may name several tables: "table1_cap12, table1_nocap".
+  function names(v) {
+    if (!has(v)) return [];
+    return String(v).split(",").map(function (s) { return s.trim(); }).filter(Boolean);
+  }
 
   // ---- skeleton: everything the page shows is built here, so a page whose script did not run shows only the fallback
   function build() {
@@ -146,15 +210,35 @@ footer{color:var(--mute);font-size:.78rem;padding-bottom:32px}
     hd.appendChild(rd);
     hd.appendChild(Object.assign(el("div"), { id: "banners" }));
     var tb = el("div", "toolbar");
-    [["open-all", "Open all details"], ["close-all", "Close all details"], ["problems", "Highlight problems"]].forEach(function (b) {
+    [["by-table", "Tables", "One row per table, update steps folded in"],
+     ["by-graph", "Graph", "The lineage as a node-and-edge graph, one column per generation"],
+     ["by-step", "Steps", "Every step in submission order"]].forEach(function (b) {
+      var x = el("button", null, b[1]); x.type = "button"; x.id = b[0];
+      x.setAttribute("aria-pressed", String(b[0] === "by-table"));
+      x.title = b[2];
+      tb.appendChild(x);
+    });
+    tb.appendChild(el("span", "sep"));
+    var pb = el("button", null, "Pilots"); pb.type = "button"; pb.id = "pilots";
+    pb.setAttribute("aria-pressed", "false");
+    pb.title = "A pilot, preflight or smoke step, and any table on which every recorded step is one";
+    tb.appendChild(pb);
+    [["open-all", "Open all"], ["close-all", "Close all"], ["problems", "Highlight problems"]].forEach(function (b) {
       var x = el("button", null, b[1]); x.type = "button"; x.id = b[0];
       if (b[0] === "problems") { x.setAttribute("aria-pressed", "false"); x.title = "Dim every step that has no failure, partial result or deviation"; }
       tb.appendChild(x);
     });
-    tb.appendChild(el("span", "legend", "✓ done · ◐ partial · ✕ failed · ◔ running · ⚠ deviations · +table = new table"));
-    var main = Object.assign(el("main"), { id: "tree" });
+    tb.appendChild(el("span", "legend", "✓ done · ◐ partial · ✕ failed · ◔ running · ⚠ deviations · + annotates the table above"));
+    var m = el("main");
+    m.appendChild(Object.assign(el("div"), { id: "tree" }));
+    var gw = Object.assign(el("div", "graphwrap"), { id: "graph" });
+    gw.hidden = true;
+    m.appendChild(gw);
+    var sl = Object.assign(el("ol", "steplist"), { id: "steps" });
+    sl.hidden = true;
+    m.appendChild(sl);
     var ft = Object.assign(el("footer"), { id: "foot" });
-    [hd, tb, main, ft].forEach(function (n) { document.body.appendChild(n); });
+    [hd, tb, m, ft].forEach(function (n) { document.body.appendChild(n); });
   }
   build();
 
@@ -170,20 +254,127 @@ footer{color:var(--mute);font-size:.78rem;padding-bottom:32px}
       else problems.push("Ledger line has neither \"summary\" nor \"id\" and was ignored: " + line.slice(0, 80));
     } catch (err) { problems.push("Ledger line is not valid JSON and was dropped (" + err.message + "): " + line.slice(0, 80) + "…"); }
   });
-  var byId = {}, kids = {}, roots = [];
+  var byId = {};
   nodes.forEach(function (n) {
     if (byId[n.id]) problems.push("step " + n.id + " appears twice; the later line is dropped");
     else byId[n.id] = n;
   });
   nodes = nodes.filter(function (n) { return byId[n.id] === n; });
-  nodes.sort(function (a, b) { return a.id - b.id; });
+  nodes.sort(function (a, b) { return Number(a.id) - Number(b.id); });
+
+  // ---- model: a table is the node, its steps hang off it -----------------
+  // create / merge mint a table; update annotates one that already exists; new_run mints no table.
+  var T = {}, order = [];
+  function table(t) {
+    if (!T[t]) { T[t] = { name: t, mints: [], annos: [] }; order.push(t); }
+    return T[t];
+  }
+  var isMint = function (n) { return n.action === "create" || n.action === "merge"; };
+  var runs = [];
   nodes.forEach(function (n) {
-    if (has(n.parent) && byId[n.parent] && n.parent !== n.id) (kids[n.parent] = kids[n.parent] || []).push(n);
-    else {
-      if (has(n.parent)) problems.push("step " + n.id + " names parent " + n.parent + ", which is not in this ledger; shown as a root");
-      roots.push(n);
-    }
+    if (n.tool === "new_run" || n.action === "new_run") { runs.push(n); return; }
+    names(n.table).forEach(function (t) { table(t)[isMint(n) ? "mints" : "annos"].push(n); });
+    names(n.reads).forEach(function (t) { table(t); });   // a source table minted elsewhere still gets a node
   });
+
+  // The step that a table's identity comes from: the last mint wins, earlier ones were superseded.
+  function primary(x) { return x.mints.length ? x.mints[x.mints.length - 1] : null; }
+  // Where a table hangs: the table its minting step read. Several sources (a merge) hang under the last.
+  order.forEach(function (t) {
+    var x = T[t], m = primary(x);
+    x.ghost = !m;
+    if (!m) return;
+    var src = names(m.reads).filter(function (s) { return s !== t && T[s]; });
+    if (!src.length) {
+      [m.parent].concat(m.also || []).forEach(function (pid) {
+        var p = byId[pid];
+        if (!p) return;
+        names(p.table).forEach(function (s) { if (s !== t && T[s] && src.indexOf(s) < 0) src.push(s); });
+      });
+    }
+    x.sources = src;
+  });
+  // Resolve the parent, with a cycle guard so a mislabelled reads cannot hang the page.
+  //
+  // A merge has several sources, which is a graph and not a tree, and an indented row can show only one
+  // parent. Where every source has a row of its own and they all hang from the SAME table, the merge is
+  // promoted to that table instead of nesting under one source: its sources then sit together as siblings
+  // directly above it, and the rail joining them is drawn through to the merge row. That is the shape of
+  // every merge these campaigns have actually done. Where a source has no row of its own (it was minted
+  // outside the ledger and collapsed into a group), there is nothing to promote to and the merge keeps
+  // the old shape, nested under its last source, with the rest named on the row.
+  order.forEach(function (t) {
+    var x = T[t], src = x.sources || [];
+    var p = src.length ? src[src.length - 1] : null;
+    for (var seen = {}, q = p; q; q = (T[q].sources || []).slice(-1)[0]) {
+      if (seen[q] || q === t) {   // a reads/parent loop would make renderChain recurse forever
+        problems.push("table " + t + " is reachable from its own chain of source tables, so the ledger cannot say what it came from; it is shown as a root");
+        p = null; break;
+      }
+      seen[q] = true;
+    }
+    if (p && src.length > 1) {
+      var own = src.filter(function (s) { return !T[s].ghost; });
+      var hosts = own.map(function (s) { return T[s].parent; });
+      var oneHost = own.length === src.length && hosts.length && hosts.every(function (h) { return h && h === hosts[0]; });
+      if (oneHost && hosts[0] !== t) {
+        x.parent = hosts[0];
+        x.joins = src.slice();
+        src.forEach(function (sname) { (T[sname].feeds = T[sname].feeds || []).push(t); });
+        x.also = [];
+        return;
+      }
+    }
+    x.parent = p;
+    x.also = src.filter(function (s) { return s !== p; });
+  });
+  var kids = {};
+  order.forEach(function (t) { if (T[t].parent) (kids[T[t].parent] = kids[T[t].parent] || []).push(t); });
+  // Put each promoted merge's sources together, in the order the merge read them, with the merge row
+  // last: the rail can then run straight down the run and close on the merge.
+  Object.keys(kids).forEach(function (host) {
+    order.filter(function (t) { return T[t].joins && T[t].parent === host; }).forEach(function (t) {
+      var arr = kids[host];
+      var run = T[t].joins.filter(function (s) { return arr.indexOf(s) >= 0; });
+      if (!run.length) return;
+      var at = Math.min.apply(null, run.concat([t]).map(function (n) { return arr.indexOf(n); }).filter(function (i) { return i >= 0; }));
+      kids[host] = arr.filter(function (n) { return run.indexOf(n) < 0 && n !== t; });
+      kids[host].splice.apply(kids[host], [at, 0].concat(run, [t]));
+    });
+  });
+
+  // Roots: source tables minted elsewhere, then everything the run_dir itself starts from.
+  var ghosts = order.filter(function (t) { return T[t].ghost; });
+  var rootTables = order.filter(function (t) { return !T[t].parent && !T[t].ghost; });
+  // Source siblings collapse to one line: table0_{yingxu,luca,jose}. Only a table with NOTHING
+  // recorded about it may collapse: one that carries annotation steps keeps its own row, or those
+  // steps would vanish from this view.
+  var bare = ghosts.filter(function (t) { return !T[t].annos.length; });
+  var kept = ghosts.filter(function (t) { return T[t].annos.length; });
+  var groups = [], byPrefix = {};
+  bare.forEach(function (t) {
+    var i = t.lastIndexOf("_"), pre = i > 0 ? t.slice(0, i) : t, suf = i > 0 ? t.slice(i + 1) : "";
+    if (!byPrefix[pre]) { byPrefix[pre] = { prefix: pre, members: [], sufs: [] }; groups.push(byPrefix[pre]); }
+    byPrefix[pre].members.push(t); byPrefix[pre].sufs.push(suf);
+  });
+
+  // A pilot: the small run done to check a setup before committing to the full one. "pilot": true or
+  // false on the step line settles it; otherwise the label and the headline are read, which is what
+  // ledgers written before that key have. Nothing else is inferred: a tool verification and a negative
+  // control are a different kind of step and stay visible.
+  function isPilot(n) {
+    if (n.pilot === true || n.pilot === false) return n.pilot;
+    return /pilot|preflight|smoke/i.test(String(n.label || "")) ||
+           /^\s*(pilot|preflight|smoke)/i.test(String(n.headline || ""));
+  }
+  // A table may be folded away only when EVERY step recorded on it is a pilot; one real annotation on a
+  // pilot table keeps the whole row, or that annotation would vanish from the page.
+  function pilotTable(x) {
+    if (!x) return false;
+    var all = x.mints.concat(x.annos);
+    return all.length > 0 && all.every(isPilot);
+  }
+  var nPilot = nodes.filter(isPilot).length;
 
   // ---- header ------------------------------------------------------------
   var base = summary.basename || "ledger";
@@ -191,31 +382,39 @@ footer{color:var(--mute);font-size:.78rem;padding-bottom:32px}
   $("title").textContent = base;
   $("goal").textContent = has(summary.goal) ? summary.goal : "";
   var c = summary.counts || {};
-  var failed = nodes.filter(function (n) { return n.status === "failed"; }).length;
+  var nFail = nodes.filter(function (n) { return n.status === "failed"; }).length;
   [["generated", c.generated], ["selected", c.selected], ["passing gates", c.passing]].forEach(function (p) {
     var s = el("div", "stat"); s.appendChild(el("b", null, has(p[1]) ? String(p[1]) : "—")); s.appendChild(el("span", null, p[0])); $("stats").appendChild(s);
   });
   var st = el("div", "stat");
-  st.appendChild(el("b", null, String(nodes.length)));
-  st.appendChild(el("span", null, "steps" + (failed ? " · " + failed + " failed" : "")));
+  st.appendChild(el("b", null, String(order.length - ghosts.length)));
+  st.appendChild(el("span", null, "tables · " + nodes.length + " steps" + (nFail ? " · " + nFail + " failed" : "") +
+    (nPilot ? " · " + nPilot + " pilot" : "")));
   $("stats").appendChild(st);
-  [["Live table", summary.live_table], ["Gates", summary.gates], ["In flight", summary.in_flight], ["Blocked", summary.blocked]].forEach(function (p) {
-    if (!has(p[1])) return;
-    $("facts").appendChild(el("dt", null, p[0]));
-    var dd = el("dd", p[0] === "Blocked" && !/^(nothing|none|—|-)\b/i.test(p[1]) ? "alert" : null, p[1]);
-    if (p[1].length > 180) {   // a summary line is one line; anything longer is folded behind a click
-      var full = p[1], short = full.slice(0, 160).replace(/\s+\S*$/, "") + "…";
-      dd.textContent = short;
-      var more = el("button", "more", "more"); more.type = "button";
-      more.addEventListener("click", function () {
-        var open = more.textContent === "less";
-        dd.firstChild.nodeValue = open ? short : full;
-        more.textContent = open ? "more" : "less";
-      });
-      dd.appendChild(more);
-    }
+  function fact(label, value) {
+    if (!has(value)) return;
+    $("facts").appendChild(el("dt", null, label));
+    var dd = el("dd", label === "Blocked" && !/^(nothing|none|—|-)\b/i.test(value) ? "alert" : null, value);
+    if (String(value).length > 180) fold(dd, String(value), 160);
     $("facts").appendChild(dd);
-  });
+  }
+  // long values are folded rather than truncated: the record stays whole, the page stays readable
+  function fold(dd, full, at) {
+    var short = full.slice(0, at).replace(/\s+\S*$/, "") + "…";
+    dd.textContent = short;
+    var more = el("button", "more", "more"); more.type = "button";
+    more.addEventListener("click", function (e) {
+      e.stopPropagation();
+      var open = more.textContent === "less";
+      dd.firstChild.nodeValue = open ? short : full;
+      more.textContent = open ? "more" : "less";
+    });
+    dd.appendChild(more);
+  }
+  fact("Live table", summary.live_table);
+  fact("Gates", summary.gates);
+  fact("In flight", summary.in_flight);
+  fact("Blocked", summary.blocked);
   var rds = summary.run_dirs || [];
   if (!rds.length) $("rundirs").hidden = true;
   rds.forEach(function (r) { var li = el("li"); li.appendChild(el("code", null, r)); $("rundirlist").appendChild(li); });
@@ -223,27 +422,31 @@ footer{color:var(--mute);font-size:.78rem;padding-bottom:32px}
   $("foot").textContent = "A transcript of what the thinker reported" + (has(summary.updated) ? ", last updated " + summary.updated : "") +
     ". The tracker verifies nothing. Science: campaigns/" + base + ".md";
 
-  // ---- tree --------------------------------------------------------------
+  // ---- step rendering (shared by both views) -----------------------------
   var GLYPH = { done: "✓", failed: "✕", partial: "◐", running: "◔" };
-  var all = [];   // {n, node, detail, head, after, caret}
+  var stepRecs = {};   // id -> [{row, detail, open()}] (a step annotating two tables appears twice)
 
-  function isProblem(n) {
-    return n.status === "failed" || n.status === "partial" || devWarn(n);
-  }
-  function devWarn(n) {
+  function devWarn(n) {   // step level: a declared deviation, or a result reported without the block
     if (!has(n.deviations)) return n.status === "done" || n.status === "partial" || n.status === "failed";
     return String(n.deviations).trim().toLowerCase() !== "none";
   }
+  // table level: only a DECLARED deviation earns the mark. "not reported" is near-universal in older
+  // ledgers and would put a triangle on every table; it stays visible on the step rows inside the panel.
+  function devDeclared(n) {
+    return has(n.deviations) && String(n.deviations).trim().toLowerCase() !== "none";
+  }
+  function isProblem(n) { return n.status === "failed" || n.status === "partial" || devWarn(n); }
 
   function field(dl, label, value, cls) {
     dl.appendChild(el("dt", null, label));
-    var dd = el("dd", has(value) ? cls : "nil", has(value) ? value : "—");
+    var dd = el("dd", has(value) ? cls : "nil", has(value) ? String(value) : "—");
+    if (has(value) && String(value).length > 320) fold(dd, String(value), 280);
     dl.appendChild(dd);
     return dd;
   }
 
-  function buildDetail(n) {
-    var d = el("div", "detail"); d.id = "d" + n.id; d.hidden = true;
+  function buildDetail(n, idx) {
+    var d = el("div", "detail"); d.id = "d" + n.id + "_" + idx; d.hidden = true;
     var dl = el("dl");
     field(dl, "Why", n.why);
     dl.appendChild(el("dt", null, "Command"));
@@ -251,9 +454,10 @@ footer{color:var(--mute);font-size:.78rem;padding-bottom:32px}
     if (has(n.command)) {
       dd.appendChild(el("pre", null, n.command));
       var b = el("button", "copy", "copy"); b.type = "button";
-      b.addEventListener("click", function () {
+      b.addEventListener("click", function (e) {
+        e.stopPropagation();
         var done = function () { b.textContent = "copied"; setTimeout(function () { b.textContent = "copy"; }, 1200); };
-        try { navigator.clipboard.writeText(n.command).then(done, function () {}); } catch (e) {}
+        try { navigator.clipboard.writeText(n.command).then(done, function () {}); } catch (err) {}
       });
       dd.appendChild(b);
     } else { dd.className = "nil"; dd.textContent = "—"; }
@@ -269,15 +473,6 @@ footer{color:var(--mute);font-size:.78rem;padding-bottom:32px}
     field(dl, "Deviations", dv, devWarn(n) ? "dev" : null);
     field(dl, ".meta.json", n.meta);
     field(dl, "Run dir", has(n.run_dir) ? n.run_dir : (summary.run_dirs || [])[0]);
-    if (n.also && n.also.length) {
-      dl.appendChild(el("dt", null, "Also from"));
-      var ad = el("dd");
-      n.also.forEach(function (id, i) {
-        if (i) ad.appendChild(document.createTextNode(", "));
-        var a = el("a", null, "#" + id); a.href = "#step" + id; ad.appendChild(a);
-      });
-      dl.appendChild(ad);
-    }
     if (n.amend && n.amend.length) {
       dl.appendChild(el("dt", null, "Amendments"));
       var ul = el("ul"); n.amend.forEach(function (t) { ul.appendChild(el("li", null, t)); });
@@ -288,57 +483,228 @@ footer{color:var(--mute);font-size:.78rem;padding-bottom:32px}
     return d;
   }
 
-  function buildNode(n, first, last, hasAfter) {
-    var node = el("div", "node" + (first ? " first" : "") + (last ? " last" : ""));
-    node.id = "step" + n.id;
-    node.dataset.open = "false";
-    var dot = el("span", "dot " + (GLYPH[n.status] ? n.status : "idle"), GLYPH[n.status] || "○");
-    dot.title = n.status || "pending";
-    node.appendChild(dot);
-    var row = el("div", "row");
-    var caret = el("button", "caret" + (hasAfter ? "" : " none"), "▾"); caret.type = "button";
-    caret.setAttribute("aria-label", "Collapse what follows this step");
-    row.appendChild(caret);
-    var detail = buildDetail(n);
-    var head = el("button", "head"); head.type = "button";
-    head.setAttribute("aria-expanded", "false"); head.setAttribute("aria-controls", detail.id);
-    head.appendChild(el("span", "num", String(n.id)));
-    head.appendChild(el("span", "tool", n.tool || "?"));
-    if (has(n.table)) { var mints = n.action === "create" || n.action === "merge"; head.appendChild(el("span", "chip" + (mints ? " new" : ""), (mints ? "+" : "") + n.table)); }
-    if (has(n.label)) head.appendChild(el("span", "chip lab", n.label));
-    if (has(n.headline)) head.appendChild(el("span", "headline", n.headline));
-    if (devWarn(n)) { var w = el("span", "tag warn", "⚠"); w.title = "deviations declared or not reported"; head.appendChild(w); }
-    row.appendChild(head);
-    node.appendChild(row);
-    node.appendChild(detail);
-    var rec = { n: n, node: node, detail: detail, head: head, caret: caret, after: null };
-    head.addEventListener("click", function () { setOpen(rec, detail.hidden); });
-    all.push(rec);
+  // one step as a collapsible line, used inside a table panel and in the chronological view
+  var seq = 0, CTX = "tree";   // which view the rows being built belong to
+  function stepRow(n, showTable) {
+    var wrap = el("li", "sstep");
+    var idx = ++seq;
+    var detail = buildDetail(n, idx);
+    var btn = el("button"); btn.type = "button";
+    btn.setAttribute("aria-expanded", "false"); btn.setAttribute("aria-controls", detail.id);
+    btn.appendChild(el("span", "gl " + (GLYPH[n.status] ? n.status : ""), GLYPH[n.status] || "○"));
+    btn.appendChild(el("span", "sid", "s" + n.id));
+    btn.appendChild(el("span", "tool", n.tool || "?"));
+    if (has(n.label)) btn.appendChild(el("span", "chip lab", n.label));
+    if (showTable) names(n.table).forEach(function (t) { btn.appendChild(el("span", "tname" + (T[t] && T[t].ghost ? " ghost" : ""), shortName(t))); });
+    if (has(n.headline)) btn.appendChild(el("span", "headline", n.headline));
+    if (devWarn(n)) { var w = el("span", "tag warn", "⚠"); w.title = "deviations declared or not reported"; btn.appendChild(w); }
+    wrap.appendChild(btn);
+    wrap.appendChild(detail);
+    var rec = {
+      n: n, wrap: wrap, detail: detail, btn: btn, ctx: CTX,
+      setOpen: function (open) { detail.hidden = !open; btn.setAttribute("aria-expanded", String(open)); }
+    };
+    btn.addEventListener("click", function () { rec.setOpen(detail.hidden); });
+    (stepRecs[n.id] = stepRecs[n.id] || []).push(rec);
     return rec;
   }
 
-  function setOpen(rec, open) {
-    rec.detail.hidden = !open;
-    rec.head.setAttribute("aria-expanded", String(open));
-    rec.node.dataset.open = String(open);
+  // table4_merged_pooled_noCH_afmodel_noCH_core → table4_…_afmodel_noCH_core
+  function shortName(t) {
+    if (t.length <= 34) return t;
+    var p = t.split("_");
+    for (var keep = Math.min(4, p.length - 1); keep >= 1; keep--) {
+      var s = p[0] + "_…_" + p.slice(-keep).join("_");
+      if (s.length <= 34) return s;
+    }
+    return p[0] + "_…_" + p[p.length - 1];
   }
 
-  function countBelow(id) {
-    var k = kids[id] || [], t = 0;
-    k.forEach(function (x) { t += 1 + countBelow(x.id); });
+  // ---- the table tree ----------------------------------------------------
+  var tableRecs = [];
+
+  function tableNode(spec, first, last, hasAfter) {
+    // spec: {name, label, ghostGroup?} — a real table, or a collapsed group of source tables
+    var x = spec.x, m = x ? primary(x) : null;
+    var allAnnos = x ? x.annos : [];
+    var annos = showPilots ? allAnnos : allAnnos.filter(function (a) { return !isPilot(a); });
+    var nHidAnno = allAnnos.length - annos.length;
+    var runSteps = spec.runSteps || [];
+    var stat = m ? m.status : (runSteps.length ? runSteps[runSteps.length - 1].status : null);
+    var node = el("div", "node" + (first ? " first" : "") + (last ? " last" : ""));
+    if (x) node.id = "table-" + x.name.replace(/[^\w-]/g, "_");
+    else if (runSteps.length) node.id = "run";
+    node.dataset.open = "false";
+    var dot = el("span", "dot " + (GLYPH[stat] ? stat : "idle"), GLYPH[stat] || "○");
+    dot.title = stat || (x && x.ghost ? "minted outside this ledger" : "pending");
+    node.appendChild(dot);
+
+    var row = el("div", "row");
+    var caret = el("button", "caret" + (hasAfter ? "" : " none"), "▾"); caret.type = "button";
+    caret.setAttribute("aria-label", "Collapse the tables below this one");
+    row.appendChild(caret);
+
+    var head = el("button", "head"); head.type = "button";
+    if (m) {
+      head.appendChild(el("span", "sid", "s" + m.id));
+      head.appendChild(el("span", "tool", m.tool || "?"));
+      if (has(m.label)) head.appendChild(el("span", "chip lab", m.label));
+      head.appendChild(el("span", "arrow", "─▶"));
+    }
+    var nm = el("span", "tname" + (x && x.ghost ? " ghost" : ""), spec.label);
+    nm.title = spec.title || spec.label;
+    head.appendChild(nm);
+    if (m && has(m.headline)) head.appendChild(el("span", "headline", m.headline));
+    if (!m) head.appendChild(el("span", "headline", spec.note || "minted outside this ledger"));
+    if (x && x.mints.length > 1) {
+      var sup = el("span", "tag note", "re-minted ×" + x.mints.length);
+      sup.title = "minted more than once; the last mint is shown";
+      head.appendChild(sup);
+    }
+    var srcList = x ? (x.joins || x.also || []) : [];
+    if (srcList.length) {
+      // "joins" is a claim about a merge. A create whose parent could not be resolved also carries extra
+      // source names, and saying it joined them would be wrong, so it only reports what it read.
+      var isMerge = m && m.action === "merge";
+      var n = x.joins ? x.joins.length : srcList.length + (T[x.parent] ? 1 : 0);
+      var jt = el("span", isMerge ? "tag join" : "tag note", (isMerge ? "joins " : "reads ") + n);
+      jt.title = x.joins ? "merged from " + x.joins.join(", ")
+                         : "nested under one source; the others are named below";
+      head.appendChild(jt);
+    }
+    if (x && x.feeds && x.feeds.length) {
+      var fe = x.feeds.map(function (m) { var pm = primary(T[m]); return pm ? "s" + pm.id : shortName(m); });
+      var ft = el("span", "tag note", "\u2192 " + fe.join(", "));
+      ft.title = "merged into " + x.feeds.join(", ");
+      head.appendChild(ft);
+    }
+    if (m && isPilot(m)) {
+      var pt = el("span", "tag note", "pilot");
+      pt.title = "a pilot step; the table is kept because not every step on it is one";
+      head.appendChild(pt);
+    }
+    var warn = (m && devDeclared(m)) || annos.some(devDeclared) || runSteps.some(devDeclared);
+    if (warn) { var w = el("span", "tag warn", "⚠"); w.title = "a step on this table declared deviations"; head.appendChild(w); }
+    var nBad = (x ? x.mints.concat(annos) : []).concat(runSteps).filter(function (s) {
+      return s.status === "failed" || s.status === "partial";
+    }).length;
+    if (nBad) {
+      var nb = el("span", "tag warn", nBad + " not clean");
+      nb.title = "steps on this table that failed or came back partial";
+      head.appendChild(nb);
+    }
+    row.appendChild(head);
+    node.appendChild(row);
+
+    // the annotation strip: every update step that wrote columns onto this table
+    if (annos.length || nHidAnno) {
+      var strip = el("div", "ann");
+      strip.appendChild(el("span", "lbl", "+"));
+      annos.forEach(function (a) {
+        var b = el("button", a.status || ""); b.type = "button";
+        b.appendChild(document.createTextNode("s" + a.id + " " + (a.tool || "?")));
+        if (has(a.label)) { var e2 = el("em", null, " " + a.label); b.appendChild(e2); }
+        b.title = (a.headline || "") + (devWarn(a) ? "  ⚠" : "");
+        b.addEventListener("click", function () { openPanel(rec, true); focusStep(a.id, rec); });
+        strip.appendChild(b);
+      });
+      if (nHidAnno) {
+        var hp = el("span", "tag note", "+" + nHidAnno + " pilot");
+        hp.title = "pilot steps on this table, hidden by the Pilots button";
+        strip.appendChild(hp);
+      }
+      node.appendChild(strip);
+    }
+
+    // Every table a merge read, named rather than truncated: ten sources are legible, and each chip
+    // goes to that table's own row.
+    if (srcList.length) {
+      var ss = el("div", "ann src");
+      ss.appendChild(el("span", "lbl", "from"));
+      (x.joins ? x.joins : x.also.concat([x.parent])).forEach(function (sname) {
+        if (sname && !T[sname]) return;
+        if (!sname) return;
+        var b = el("button", "srcchip"); b.type = "button";
+        b.textContent = shortName(sname);
+        b.title = sname;
+        b.addEventListener("click", function () { revealTable(sname); });
+        ss.appendChild(b);
+      });
+      node.appendChild(ss);
+    }
+
+    // the panel: the steps themselves, which is where every number lives
+    var panel = el("div", "panel"); panel.hidden = true;
+    if (runSteps.length) {
+      panel.appendChild(el("h3", null, "Run dir"));
+      var ul0 = el("ol", "steplist");
+      runSteps.forEach(function (s) { ul0.appendChild(stepRow(s, false).wrap); });
+      panel.appendChild(ul0);
+    }
+    if (x && x.mints.length) {
+      panel.appendChild(el("h3", null, x.mints.length > 1 ? "Mints (last one is live)" : "Minted by"));
+      var ul = el("ol", "steplist");
+      x.mints.forEach(function (s) { ul.appendChild(stepRow(s, false).wrap); });
+      panel.appendChild(ul);
+    }
+    if (annos.length) {
+      panel.appendChild(el("h3", null, "Annotations (" + annos.length + ")"));
+      var ul2 = el("ol", "steplist");
+      annos.forEach(function (s) { ul2.appendChild(stepRow(s, false).wrap); });
+      panel.appendChild(ul2);
+    }
+    if (!panel.firstChild) panel.appendChild(el("p", "empty", "No step in this ledger wrote this table."));
+    node.appendChild(panel);
+
+    var rec = { x: x, spec: spec, node: node, panel: panel, head: head, caret: caret, after: null,
+                steps: (x ? x.mints.concat(annos) : []).concat(runSteps) };
+    head.addEventListener("click", function () { openPanel(rec, panel.hidden); });
+    tableRecs.push(rec);
+    return rec;
+  }
+
+  function openPanel(rec, open) {
+    rec.panel.hidden = !open;
+    rec.node.dataset.open = String(open);
+  }
+  function focusStep(id, rec) {
+    var recs = stepRecs[id] || [];
+    var r = recs.filter(function (q) { return !rec || rec.panel.contains(q.wrap); })[0] || recs[0];
+    if (!r) return;
+    Object.keys(stepRecs).forEach(function (k) { stepRecs[k].forEach(function (q) { q.wrap.classList.remove("target"); }); });
+    r.setOpen(true);
+    r.wrap.classList.add("target");
+    r.wrap.scrollIntoView({ block: "center" });
+  }
+
+  // Go to a table's own row: unfold what hides it, unfold the pilots if that is where it went, highlight.
+  function revealTable(name) {
+    function at() {
+      return tableRecs.filter(function (r) { return r.x && r.x.name === name; })[0] ||
+             tableRecs.filter(function (r) { return (r.spec.members || []).indexOf(name) >= 0; })[0];
+    }
+    var rec = at();
+    if (!rec && !showPilots) { setPilots(true); rec = at(); }
+    if (!rec) return;
+    view("table");
+    tableRecs.forEach(function (r) { if (r.setFolded && r.after && r.after.contains(rec.node)) r.setFolded(false); });
+    tableRecs.forEach(function (r) { r.node.classList.remove("target"); });
+    rec.node.classList.add("target");
+    rec.node.scrollIntoView({ block: "center" });
+  }
+
+  function countBelow(spec) {
+    var t = 0;
+    (spec.kidSpecs || []).forEach(function (k) { t += 1 + countBelow(k); });
     return t;
   }
 
-  // Render a chain: single-child runs stay at one indent; a fork indents its branches.
-  function renderChain(n, container, first) {
-    var k = kids[n.id] || [];
-    var last = k.length === 0;
-    var rec = buildNode(n, first, last, !last);
+  // a chain of single children stays at one indent; a fork indents its branches
+  function renderChain(spec, container, first) {
+    var k = spec.kidSpecs || [];
+    var last = !k.length;
+    var rec = tableNode(spec, first, last, !last);
     container.appendChild(rec.node);
-    if (k.length > 1) {
-      var tag = el("span", "tag fork", "fork · " + k.length);
-      rec.head.appendChild(tag);
-    }
     if (last) return;
     var after = el("div", "after");
     rec.after = after;
@@ -346,53 +712,360 @@ footer{color:var(--mute);font-size:.78rem;padding-bottom:32px}
     if (k.length === 1) renderChain(k[0], after, false);
     else {
       var wrap = el("div", "branches");
-      k.forEach(function (child) {
-        var br = el("div", "branch");
-        renderChain(child, br, true);
+      k.forEach(function (sp) {
+        var cls = "branch";
+        if (sp.x && sp.x.joins) cls += " join";
+        else if (sp.x && (sp.x.feeds || []).some(function (m) {
+          return k.some(function (o) { return o.name === m && o.x && o.x.joins; });
+        })) cls += " feeds";
+        var br = el("div", cls);
+        renderChain(sp, br, true);
         wrap.appendChild(br);
       });
       after.appendChild(wrap);
     }
-    var hidTag = null;
+    var hidTag = null, n = countBelow(spec);
     rec.setFolded = function (hide) {
       after.hidden = hide;
-      rec.caret.textContent = hide ? "▸" : "▾";
-      rec.caret.setAttribute("aria-label", hide ? "Expand what follows this step" : "Collapse what follows this step");
-      if (hide && !hidTag) { hidTag = el("span", "tag hidden", "+" + countBelow(n.id) + " hidden"); rec.head.appendChild(hidTag); }
+      rec.caret.textContent = hide ? "\u25b8" : "\u25be";
+      rec.caret.setAttribute("aria-label", hide ? "Expand the tables below this one" : "Collapse the tables below this one");
+      if (hide && !hidTag) { hidTag = el("span", "tag hidden", "+" + n + " hidden"); rec.head.appendChild(hidTag); }
       else if (!hide && hidTag) { hidTag.remove(); hidTag = null; }
     };
     rec.caret.addEventListener("click", function () { rec.setFolded(!after.hidden); });
   }
 
+  // ---- the spec tree: one spec per rendered row, built once -------------
+  function specFor(name, seen) {
+    seen = seen || {};
+    seen[name] = true;
+    return {
+      name: name, x: T[name], label: shortName(name), title: name,
+      kidSpecs: (kids[name] || []).filter(function (ch) { return !seen[ch]; })
+        .map(function (ch) { return specFor(ch, Object.assign({}, seen)); })
+    };
+  }
+  function groupSpec(g) {
+    if (g.members.length === 1) return specFor(g.members[0]);
+    var k = [], seenK = {};
+    g.members.forEach(function (t) {
+      (kids[t] || []).forEach(function (ch) { if (!seenK[ch]) { seenK[ch] = true; k.push(specFor(ch)); } });
+    });
+    return {
+      name: g.prefix, x: null, kidSpecs: k, members: g.members,
+      label: g.prefix + "_{" + g.sufs.join(",") + "}", title: g.members.join(", "),
+      note: g.members.length + " source tables, minted outside this ledger"
+    };
+  }
+
   var tree = $("tree");
-  if (!nodes.length) tree.appendChild(el("p", "empty", "No prosapia step recorded yet."));
-  roots.forEach(function (r) {
-    var g = el("div", "chain");
-    renderChain(r, g, true);
-    tree.appendChild(g);
-  });
-  if (all.length === 1) all[0].node.classList.add("solo");
+  var ghostSpecs = groups.map(groupSpec).concat(kept.map(function (t) { return specFor(t); }));
+  var ownSpecs = rootTables.map(function (t) { return specFor(t); });
+  function runSpec(rs, kidSpecs) {
+    return {
+      name: "__run__" + rs.map(function (r) { return r.id; }).join("_"), x: null, kidSpecs: kidSpecs,
+      label: base, title: (summary.run_dirs || [])[0] || base,
+      note: rs.map(function (r) { return "s" + r.id + " new_run" + (has(r.headline) ? ": " + r.headline : ""); }).join(" \u00b7 "),
+      runSteps: rs
+    };
+  }
+  var rootSpecs;
+  if (runs.length === 1) {
+    // one run_dir: it is the single root, and every table in the ledger descends from it
+    rootSpecs = [runSpec(runs, ghostSpecs.concat(ownSpecs))];
+  } else if (runs.length > 1) {
+    // several run_dirs: nothing in a step line says which one a table belongs to, so they stay level
+    rootSpecs = runs.map(function (r) { return runSpec([r], []); }).concat(ghostSpecs, ownSpecs);
+  } else {
+    rootSpecs = ghostSpecs.concat(ownSpecs);
+  }
+
+  // Pilots are folded away by default. The tree is redrawn rather than hidden with CSS, because the
+  // rail that joins the rows is decided per row while it is built, and a display:none sibling leaves it
+  // running past the last visible row.
+  var showPilots = false;
+  function prune(spec) {
+    var ks = (spec.kidSpecs || []).map(prune).filter(Boolean);
+    if (!showPilots && !ks.length && pilotTable(spec.x)) return null;
+    var out = {}; for (var k in spec) out[k] = spec[k];
+    out.kidSpecs = ks;
+    return out;
+  }
+  var problemsOn = false;
+  function drawTree() {
+    tree.textContent = "";                    // the tree owns these rows; the flat view keeps its own
+    tableRecs.length = 0;
+    Object.keys(stepRecs).forEach(function (id) {
+      stepRecs[id] = stepRecs[id].filter(function (r) { return r.ctx !== "tree"; });
+      if (!stepRecs[id].length) delete stepRecs[id];
+    });
+    CTX = "tree";
+    if (!nodes.length) { tree.appendChild(el("p", "empty", "No prosapia step recorded yet.")); return; }
+    var drawn = rootSpecs.map(prune).filter(Boolean);
+    if (!drawn.length) tree.appendChild(el("p", "empty", "Every table in this ledger is a pilot. Use the Pilots button to show them."));
+    drawn.forEach(function (sp) {
+      var g = el("div", "chain");
+      renderChain(sp, g, true);
+      tree.appendChild(g);
+    });
+    if (problemsOn) tableRecs.forEach(function (r) { r.node.classList.toggle("dim", !r.steps.some(isProblem)); });
+  }
+  drawTree();
+
+  // ---- the lineage graph -------------------------------------------------
+  // The tree above shows one parent per row, which is all an indented row can show. This draws the
+  // lineage as it really is: every table a node, every source a drawn edge, so a merge fans in from all
+  // of its sources at once. Layered left to right, one column per generation, and the order inside a
+  // column is settled by a few barycentre sweeps to pull the edges straight.
+  var SVGNS = "http://www.w3.org/2000/svg";
+  var NODE_W = 222, NODE_H = 30, GAP_X = 78, GAP_Y = 13, PAD = 16;
+  // A label is elided in the MIDDLE, never at the tail: the tail is what tells table2_…_s1_L12 from
+  // table2_…_s1_L15, and ten sibling nodes that all read "table2_phseed_r2_s1_L…" would be useless.
+  function fitName(t, budget) {
+    if (t.length <= budget) return t;
+    var p = t.split("_");
+    for (var keep = p.length - 1; keep >= 1; keep--) {
+      var cut = p[0] + "_…_" + p.slice(-keep).join("_");
+      if (cut.length <= budget) return cut;
+    }
+    return "…" + t.slice(-(budget - 1));
+  }
+  var graphFit = false, graphDrawn = null;
+
+  function svg(tag, attrs) {
+    var e = document.createElementNS(SVGNS, tag);
+    for (var k in attrs) if (attrs[k] != null) e.setAttribute(k, String(attrs[k]));
+    return e;
+  }
+
+  function graphModel() {
+    var vis = {};
+    order.forEach(function (t) { if (showPilots || !pilotTable(T[t])) vis[t] = true; });
+    var srcOf = {};
+    Object.keys(vis).forEach(function (t) {
+      srcOf[t] = (T[t].sources || []).filter(function (sname) { return vis[sname]; });
+    });
+    // layer = longest path from a root, so a merge always sits right of every source it joined
+    var depth = {}, busy = {};
+    function dep(t) {
+      if (depth[t] != null) return depth[t];
+      if (busy[t]) return 0;                       // a cycle was already reported as a banner
+      busy[t] = true;
+      var d = 0;
+      srcOf[t].forEach(function (sname) { d = Math.max(d, dep(sname) + 1); });
+      busy[t] = false;
+      return (depth[t] = d);
+    }
+    Object.keys(vis).forEach(dep);
+    var layers = [];
+    order.forEach(function (t) {
+      if (!vis[t]) return;
+      (layers[depth[t]] = layers[depth[t]] || []).push(t);
+    });
+    for (var i = 0; i < layers.length; i++) layers[i] = layers[i] || [];
+    // barycentre: order each column by the mean position of what it connects to in the column before,
+    // then sweep back the other way. Four passes is enough at this size and always terminates.
+    var pos = {};
+    function reindex() { layers.forEach(function (L) { L.forEach(function (t, i) { pos[t] = i; }); }); }
+    reindex();
+    var kidsOf = {};
+    Object.keys(vis).forEach(function (t) {
+      srcOf[t].forEach(function (sname) { (kidsOf[sname] = kidsOf[sname] || []).push(t); });
+    });
+    function sweep(forward) {
+      var seq = forward ? layers : layers.slice().reverse();
+      seq.forEach(function (L, li) {
+        if (forward ? li === 0 : li === 0) return;
+        var key = {};
+        L.forEach(function (t, i) {
+          var rel = forward ? srcOf[t] : (kidsOf[t] || []);
+          if (!rel.length) { key[t] = pos[t]; return; }
+          var sum = 0;
+          rel.forEach(function (r) { sum += pos[r]; });
+          key[t] = sum / rel.length;
+        });
+        L.sort(function (a, b) { return key[a] - key[b] || pos[a] - pos[b]; });
+        L.forEach(function (t, i) { pos[t] = i; });
+      });
+      reindex();
+    }
+    for (var pass = 0; pass < 2; pass++) { sweep(true); sweep(false); }
+    // Barycentre converges with ties left over. Swapping neighbours and keeping the swap only when it
+    // removes a crossing clears those: measured on the 3xT_fusion ledger, 15 crossings down to 2.
+    // Counting crossings is quadratic in the edges, so past a few hundred the barycentre order stands.
+    var E = [];
+    Object.keys(vis).forEach(function (t) { srcOf[t].forEach(function (sname) { E.push([sname, t]); }); });
+    function crossings() {
+      var c = 0;
+      for (var i = 0; i < E.length; i++) for (var j = i + 1; j < E.length; j++) {
+        var a = E[i], b = E[j];
+        if (depth[a[0]] !== depth[b[0]] || depth[a[1]] !== depth[b[1]]) continue;
+        if ((pos[a[0]] - pos[b[0]]) * (pos[a[1]] - pos[b[1]]) < 0) c++;
+      }
+      return c;
+    }
+    for (var round = 0, moved = E.length <= 220; moved && round < 8; round++) {
+      moved = false;
+      layers.forEach(function (L) {
+        for (var i = 0; i + 1 < L.length; i++) {
+          var was = crossings(), t0 = L[i];
+          L[i] = L[i + 1]; L[i + 1] = t0; reindex();
+          if (crossings() < was) moved = true;
+          else { t0 = L[i]; L[i] = L[i + 1]; L[i + 1] = t0; reindex(); }
+        }
+      });
+    }
+    return { vis: vis, srcOf: srcOf, layers: layers, depth: depth };
+  }
+
+  function drawGraph() {
+    var key = String(showPilots);
+    if (graphDrawn === key + "|" + graphFit) return;      // nothing changed since the last draw
+    graphDrawn = key + "|" + graphFit;
+    var host = $("graph");
+    host.textContent = "";
+    var g = graphModel();
+    var names = Object.keys(g.vis);
+    if (!names.length) { host.appendChild(el("p", "empty", "No table to draw yet.")); return; }
+
+    var rows = Math.max.apply(null, g.layers.map(function (L) { return L.length; }));
+    var W = PAD * 2 + g.layers.length * NODE_W + (g.layers.length - 1) * GAP_X;
+    var H = PAD * 2 + rows * NODE_H + (rows - 1) * GAP_Y;
+    var at = {};
+    g.layers.forEach(function (L, li) {
+      var off = (rows - L.length) * (NODE_H + GAP_Y) / 2;   // centre a short column
+      L.forEach(function (t, i) {
+        at[t] = { x: PAD + li * (NODE_W + GAP_X), y: PAD + off + i * (NODE_H + GAP_Y) };
+      });
+    });
+
+    var root = svg("svg", { viewBox: "0 0 " + W + " " + H, width: graphFit ? "100%" : W, height: graphFit ? null : H,
+                            role: "img", "aria-label": "Table lineage graph" });
+    if (graphFit) root.setAttribute("preserveAspectRatio", "xMinYMin meet");
+    var eg = svg("g", null), ng = svg("g", null);
+    root.appendChild(eg); root.appendChild(ng);
+
+    names.forEach(function (t) {
+      var srcs = g.srcOf[t], merge = srcs.length > 1;
+      srcs.forEach(function (sname) {
+        var a = at[sname], b = at[t];
+        if (!a || !b) return;
+        var x1 = a.x + NODE_W, y1 = a.y + NODE_H / 2, x2 = b.x, y2 = b.y + NODE_H / 2;
+        var dx = Math.max(28, (x2 - x1) / 2);
+        eg.appendChild(svg("path", {
+          d: "M" + x1 + "," + y1 + " C" + (x1 + dx) + "," + y1 + " " + (x2 - dx) + "," + y2 + " " + x2 + "," + y2,
+          class: "gedge" + (merge ? " gmerge" : ""),
+          "data-from": sname, "data-to": t
+        }));
+      });
+    });
+
+    names.forEach(function (t) {
+      var x = T[t], m = primary(x), p = at[t];
+      var cls = "gnode" + (m && m.status ? " " + m.status : x.ghost ? " ghost" : "");
+      var a = svg("g", { class: cls, "data-table": t, tabindex: "0", role: "button" });
+      a.appendChild(svg("rect", { x: p.x, y: p.y, width: NODE_W, height: NODE_H, rx: 7 }));
+      var n = x.annos.length;
+      var tag = m ? "s" + m.id + "  " : "";
+      var txt = svg("text", { x: p.x + 9, y: p.y + NODE_H / 2 + 4 });
+      txt.textContent = tag + fitName(t, (n ? 23 : 27) - tag.length);
+      a.appendChild(txt);
+      if (n) {
+        var cnt = svg("text", { x: p.x + NODE_W - 9, y: p.y + NODE_H / 2 + 4, class: "gcount", "text-anchor": "end" });
+        cnt.textContent = "+" + n;
+        a.appendChild(cnt);
+      }
+      var tip = svg("title", null);
+      tip.textContent = t + (m && has(m.headline) ? "\n" + m.headline : "") +
+        (n ? "\n" + n + " update step" + (n === 1 ? "" : "s") : "") + "\nclick to open this table in the Tables view";
+      a.appendChild(tip);
+      a.addEventListener("click", function () { revealTable(t); });
+      a.addEventListener("keydown", function (ev) { if (ev.key === "Enter" || ev.key === " ") revealTable(t); });
+      ng.appendChild(a);
+    });
+
+    host.appendChild(root);
+    var foot = el("p", "ghint");
+    foot.appendChild(document.createTextNode(names.length + " tables in " + g.layers.length +
+      " generations. A node is a table, an edge is a table it was built from, and a merge fans in from all of its sources. "));
+    var fit = el("button", "more", graphFit ? "full size" : "fit to width"); fit.type = "button";
+    fit.addEventListener("click", function () { graphFit = !graphFit; graphDrawn = null; drawGraph(); });
+    foot.appendChild(fit);
+    host.appendChild(foot);
+  }
+
+  // ---- chronological view ------------------------------------------------
+  var flat = [];
+  CTX = "flat";
+  nodes.forEach(function (n) { var r = stepRow(n, true); flat.push(r); $("steps").appendChild(r.wrap); });
+  function applyPilots() {
+    flat.forEach(function (r) { r.wrap.hidden = !showPilots && isPilot(r.n); });
+    var b = $("pilots");
+    b.hidden = !nPilot;
+    b.textContent = (showPilots ? "Hide " : "Show ") + nPilot + " pilot" + (nPilot === 1 ? "" : "s");
+    b.setAttribute("aria-pressed", String(showPilots));
+  }
+  applyPilots();
 
   // ---- controls ----------------------------------------------------------
-  $("open-all").addEventListener("click", function () { all.forEach(function (r) { setOpen(r, true); }); });
-  $("close-all").addEventListener("click", function () { all.forEach(function (r) { setOpen(r, false); }); });
-  $("problems").addEventListener("click", function (e) {
-    var on = e.currentTarget.getAttribute("aria-pressed") !== "true";
-    e.currentTarget.setAttribute("aria-pressed", String(on));
-    all.forEach(function (r) { r.node.classList.toggle("dim", on && !isProblem(r.n)); });
+  function view(which) {
+    $("tree").hidden = which !== "table";
+    $("graph").hidden = which !== "graph";
+    $("steps").hidden = which !== "step";
+    $("by-table").setAttribute("aria-pressed", String(which === "table"));
+    $("by-graph").setAttribute("aria-pressed", String(which === "graph"));
+    $("by-step").setAttribute("aria-pressed", String(which === "step"));
+    if (which === "graph") drawGraph();
+  }
+  $("by-table").addEventListener("click", function () { view("table"); });
+  $("by-graph").addEventListener("click", function () { view("graph"); });
+  $("by-step").addEventListener("click", function () { view("step"); });
+  function everyStep(fn) { Object.keys(stepRecs).forEach(function (k) { stepRecs[k].forEach(fn); }); }
+  $("open-all").addEventListener("click", function () {
+    tableRecs.forEach(function (r) { openPanel(r, true); });
+    everyStep(function (r) { r.setOpen(true); });
   });
+  $("close-all").addEventListener("click", function () {
+    tableRecs.forEach(function (r) { openPanel(r, false); });
+    everyStep(function (r) { r.setOpen(false); });
+  });
+  $("problems").addEventListener("click", function (e) {
+    problemsOn = e.currentTarget.getAttribute("aria-pressed") !== "true";
+    e.currentTarget.setAttribute("aria-pressed", String(problemsOn));
+    tableRecs.forEach(function (r) {
+      r.node.classList.toggle("dim", problemsOn && !r.steps.some(isProblem));
+    });
+    everyStep(function (r) { r.wrap.classList.toggle("dim", problemsOn && !isProblem(r.n)); });
+  });
+  $("pilots").addEventListener("click", function () { setPilots(!showPilots); });
+  function setPilots(on) {
+    if (on === showPilots) return;
+    showPilots = on;
+    drawTree();
+    applyPilots();
+    graphDrawn = null;
+    if (!$("graph").hidden) drawGraph();
+  }
 
-  // #step7 opens step 7 (and unfolds anything hiding it), so the campaign log can link to a step.
+  // #step7 still works: it opens the table step 7 wrote, and highlights that step inside it.
   function goto() {
-    var m = /^#step(\d+)$/.exec(location.hash);
+    var m = /^#step([\d.]+)$/.exec(location.hash);
     if (!m) return;
-    var rec = all.filter(function (r) { return String(r.n.id) === m[1]; })[0];
-    if (!rec) return;
-    all.forEach(function (r) { if (r.setFolded && r.after.contains(rec.node)) r.setFolded(false); });
-    all.forEach(function (r) { r.node.classList.remove("target"); });
-    setOpen(rec, true);
-    rec.node.classList.add("target");
-    rec.node.scrollIntoView({ block: "center" });
+    var n = byId[m[1]];
+    if (n && isPilot(n)) setPilots(true);   // a link into a folded pilot unfolds the pilots
+    var host = tableRecs.filter(function (r) { return r.steps.some(function (s) { return String(s.id) === m[1]; }); })[0];
+    if (!host) {                                   // new_run, or a step whose table is unknown
+      view("step");
+      focusStep(m[1], null);
+      return;
+    }
+    view("table");
+    tableRecs.forEach(function (r) { if (r.setFolded && r.after && r.after.contains(host.node)) r.setFolded(false); });
+    tableRecs.forEach(function (r) { r.node.classList.remove("target"); });
+    openPanel(host, true);
+    host.node.classList.add("target");
+    host.node.scrollIntoView({ block: "center" });
+    focusStep(m[1], host);
   }
   window.addEventListener("hashchange", goto);
   goto();

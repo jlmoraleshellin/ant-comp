@@ -2,24 +2,25 @@
 """
 Collect mkcomplex results into the table.
 
-Scans <run_dir>/<table>/mkcomplex/ for the per-design TSV files written by
-mkcomplex.sh and merges the assembled complex back into the table as
-<prefix>_status plus one column per field:
+Reads the per-design TSVs mkcomplex.sh wrote under <run_dir>/<table>/mkcomplex/ and adds
+<prefix>_status plus:
 
     sequence            the assembled multi-chain string, e.g. 'SEQA/SEQB/DESIGN'
-                        -- feed it to a predictor with
-                        `-i mkcomplex_sequence` so it folds the COMPLEX
-    n_chains            number of chains in it (separator-delimited segments)
+                        (feed it to a predictor with ``-i mkcomplex_sequence``)
+    n_chains            number of separator-delimited chains
     chain_lens          per-chain residue counts, comma-joined, in chain order
-    design_chain_index  0-based index of the design's own chain, i.e. which
-                        chain is the binder (chain letter chr(ord('A') + index)
-                        once a predictor maps segments onto letters)
+    design_chain_index  0-based index of the design's chain (the FIRST copy under
+                        ``--design-copies N``)
     total_len           residues summed over all chains
+    design_copies       copies of the design's sequence emitted (``--design-copies``)
 
-<prefix>_path is always empty: mkcomplex writes no structure, only a sequence.
-A design whose sequence was empty, already multi-chain, or whose fixed chains
-carried a non-standard residue gets an 'error: ...' status and empty columns --
-the task still exited 0, so the rest of the array collects normally.
+<prefix>_path is always empty (no structure is written). A design whose sequence is
+empty, already multi-chain or carries a non-standard residue (in a fixed chain or its
+own) gets an 'error: ...' status and empty columns; the task still exited 0, so the
+rest of the array collects normally.
+
+``design_copies`` is read from the TSV, never inferred: a run made before the flag
+existed re-collects as NA, not 1, since an invented 1 would read as a measured one.
 
 Usage:
     sapia collect mkcomplex outputs/20260928_100140_7ojg_binder --table table1
@@ -32,7 +33,7 @@ import pandas as pd
 from prosapia.core import CollectCtx, CollectEach, Collected, DesignCtx
 
 # Bare column names; the driver leaf-prefixes them (mkcomplex_<name>).
-INT_COLUMNS = ["n_chains", "design_chain_index", "total_len"]
+INT_COLUMNS = ["n_chains", "design_chain_index", "total_len", "design_copies"]
 STR_COLUMNS = ["sequence", "chain_lens"]
 RESULT_COLUMNS = STR_COLUMNS + INT_COLUMNS
 
@@ -50,8 +51,7 @@ def _present(row: pd.Series, col: str) -> Any | None:
 
 
 def _fields(row: pd.Series) -> dict[str, Any]:
-    """One result row -> collected columns, NA-safe (a blank cell is a field that
-    was not produced, not a zero)."""
+    """One result row -> columns; a blank cell is a missing field, not a zero."""
     data = _empty()
     for col in STR_COLUMNS:
         if (value := _present(row, col)) is not None:
@@ -63,10 +63,7 @@ def _fields(row: pd.Series) -> dict[str, Any]:
 
 
 def collect_mkcomplex(ctx: CollectCtx) -> CollectEach:
-    """Per-design mkcomplex collector. The framework iterates ready designs and stamps
-    status (keyed by the tool leaf); this reads one design's one-row <name>.tsv and adds
-    the assembled sequence columns. Variants are distinguished via --dir-label, matching
-    the output dir."""
+    """Per-design collector: adds the assembled-sequence columns from ``<name>.tsv``."""
 
     def one(d: DesignCtx) -> Iterable[Collected]:
         tsv_path = ctx.out_dir / f"{d.name}.tsv"
@@ -81,7 +78,8 @@ def collect_mkcomplex(ctx: CollectCtx) -> CollectEach:
             return
 
         row_data = result_df.iloc[0]
-        status = str(row_data["status"])
+        # A TSV without a status column is truncated/foreign: error row, don't raise.
+        status = str(row_data.get("status", "error: unknown"))
 
         if status != "OK":
             yield Collected(status=status, path="", data=_empty())

@@ -17,6 +17,12 @@ downstream comparison consumes) plus one <prefix>_<field> column per field:
                 (AFTER --rename-to or a group's ':<out_id>', so this is what a
                 viewer, usalign or ringfit --target-chains will see)
     n_atoms     heavy atoms actually written, summed the same way
+    chain_n_res     SPLIT MODE ONLY (--split-groups), else NA: residues written
+                    per output chain, in output-ID order -- 'A=152,...,D=60'
+    chain_mean_b    SPLIT MODE ONLY, else NA: mean B-factor over the written atoms
+                    of each output chain, 2 decimals -- 'A=1.00,...,D=0.00'. With
+                    chain_n_res, the trust columns that say which segment is the
+                    binder (RFdiffusion: B 0) and which the target (B 1)
 
 Every one of those is "actually written", not "requested": a design whose requested
 chain was absent gets an 'error: chain E not in ...' status, an empty path and NA
@@ -39,7 +45,7 @@ from prosapia.core import CollectCtx, CollectEach, Collected, DesignCtx
 
 # Bare column names; the driver leaf-prefixes them (chainsel_<name>).
 INT_COLUMNS = ["n_chains", "n_res", "n_atoms"]
-STR_COLUMNS = ["chains"]
+STR_COLUMNS = ["chains", "chain_n_res", "chain_mean_b"]
 RESULT_COLUMNS = INT_COLUMNS + STR_COLUMNS
 
 
@@ -81,7 +87,12 @@ def collect_chainsel(ctx: CollectCtx) -> CollectEach:
             yield Collected(status="missing", path="", data=_empty())
             return
 
-        result_df = pd.read_csv(tsv_path, sep="\t", dtype={"chains": str})
+        # Text columns as str. A non-split TSV has no chain_n_res/chain_mean_b
+        # column at all; pandas ignores dtype keys for absent columns, and
+        # _present() turns the absence into NA.
+        result_df = pd.read_csv(
+            tsv_path, sep="\t", dtype={c: str for c in STR_COLUMNS}
+        )
         if result_df.empty:
             yield Collected(status="error: empty tsv", path="", data=_empty())
             return
