@@ -14,7 +14,8 @@ TOOL = Tool(
     action="update",
     description=(
         "Extract a named subset of chains into a new structure file, optionally "
-        "merging several source chains into one output chain."
+        "merging several source chains into one output chain, or cutting one "
+        "source chain into several by residue position (--split-groups)."
     ),
     default_script=str(Path(__file__).parent / "chainsel.sh"),
     # Sentinel, as in usalign: no column is a defensible default here (the tool is

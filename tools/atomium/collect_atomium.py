@@ -1,41 +1,21 @@
-"""Collect AtomiUM FASTA outputs into a table.
+"""Collect AtomiUM FASTA outputs into a child table, one row per designed sequence.
 
-Scans the output directory for the batched subgroup dirs, parses the FASTAs and
-writes one child row per designed sequence.
+Lineage is ``<output_dir>/grp_<g>/seqs/<stem>.fa``: the submitter symlinks each input
+as ``<design_name>.pdb``, so the FASTA stem IS the parent row (stamped ``parent_name``).
 
-Lineage is derived from the directory structure:
+The FASTA is not ProteinMPNN's, so this does not share its parser::
 
-    <output_dir>/grp_<g>/seqs/<fasta_stem>.fa
-
-  * grp_<g>     = a batched subgroup run by atomium.sh (several designs sharing
-    params, run in one atomium.py call).
-  * fasta_stem  = the staged input filename AtomiUM processed. The submitter
-    symlinks each input as ``<design_name>.pdb``, so the stem IS the immediate
-    parent-table row -- stamped as ``parent_name``.
-
-AtomiUM's FASTA is NOT ProteinMPNN's, so this does not share proteinmpnn's parser
-(verified against ``atomium.py``, which writes the file directly):
-
-    >_init_sequence
-    MKT...                                     <- the native input sequence
+    >_init_sequence, chains=D                  <- echo of the native input, skipped
+    MKT...
     >gen_sample_0, temperature=0.1, seq_rec=0.43
     MRE...
 
-There is no ``score`` or ``global_score`` -- AtomiUM reports only sequence recovery
-against the input, so a design cannot be ranked by model likelihood here the way an
-mpnn ``score`` column allows. Two consequences worth knowing when reading the table:
-
-  * ``seq_rec`` is similarity to the INPUT sequence, not a quality score. On a de
-    novo backbone whose input sequence is poly-glycine it is close to meaningless;
-    it only carries information when redesigning a real sequence.
-  * ``sample`` is NOT unique per row. AtomiUM numbers samples ``n % num_seq_per_target``
-    and walks temperatures with ``n // num_seq_per_target``, so with several
-    ``--sampling-temp`` values the same ``sample`` id recurs once per temperature.
-    The row key therefore uses the running entry index (``<parent>_a<i>``), and
-    (``sample``, ``temperature``) together identify a draw.
-
-Each row carries only ``parent_name``; ancestor values are resolved on demand by
-walking the lineage, so nothing is propagated here.
+The echo is recognised by the first comma-separated field (case-insensitive), so the
+``chains=`` suffix and any further field are tolerated. There is no score column, and
+``seq_rec`` is similarity to the INPUT sequence, not quality. ``sample`` recurs once
+per ``--sampling-temp`` value, so rows are keyed by entry index (``<parent>_a<i>``)
+and (``sample``, ``temperature``) identify a draw. Details:
+``.claude/skills/atomium/SKILL.md``.
 
 Usage:
     sapia collect atomium outputs/<run> --table <the table the run reserved>
@@ -64,12 +44,7 @@ HEADER_FIELDS: Dict[str, type] = {
 
 
 def parse_atomium_header(header: str) -> Dict[str, Any]:
-    """Parse ``gen_sample_0, temperature=0.1, seq_rec=0.43`` into columns.
-
-    The sample id is the ``gen_sample_<k>`` prefix rather than a ``key=value`` pair.
-    Unparseable fields become NA rather than raising: a partially written header
-    should still collect its sequence.
-    """
+    """Parse ``gen_sample_0, temperature=0.1, seq_rec=0.43``; bad fields become NA."""
     out: Dict[str, Any] = {"sample": pd.NA}
     out.update({k: pd.NA for k in HEADER_FIELDS})
     for part in header.split(","):
@@ -112,13 +87,8 @@ def parse_fasta(fasta_path: Path) -> List[Tuple[str, str]]:
 
 
 def collect_atomium(ctx: CollectCtx) -> CollectEach:
-    """Per-parent AtomiUM collector. atomium is a create tool: the framework iterates
-    the ready parents and this mints one child row (``<parent>_a<i>``) per sampled
-    sequence, carrying ``parent`` for lineage. The framework stamps status/path/
-    parent_name from each Collected; child rows are discovered on disk, so re-running
-    rebuilds them (idempotent)."""
-    # Each grp_<g>/ output dir holds seqs/<design>.fa, where the staged input was
-    # symlinked as <design>.pdb -- so the FASTA stem IS the parent-table row name.
+    """Per-parent collector: one child row ``<parent>_a<i>`` per sampled sequence."""
+    # The staged input is symlinked as <design>.pdb: the FASTA stem is the parent row.
     fasta_by_parent: Dict[str, Path] = {}
     for subdir in sorted(p for p in ctx.out_dir.iterdir() if p.is_dir()):
         if subdir.name in ("atomium_logs", "atomium_tasks"):
@@ -135,12 +105,15 @@ def collect_atomium(ctx: CollectCtx) -> CollectEach:
             print(f"{d.name}: no FASTA found (skipping)")
             return
 
-        for i, (header, sequence) in enumerate(parse_fasta(fasta_path)):
-            # The first entry is AtomiUM's echo of the native input sequence. Matched
-            # by its header rather than by position, so a future extra preamble entry
-            # cannot silently shift which row is dropped.
-            if header.strip() == INIT_HEADER:
+        entries = parse_fasta(fasta_path)
+        n_entries = len(entries)
+        n_designed = 0
+
+        for i, (header, sequence) in enumerate(entries):
+            # Skip AtomiUM's echo of the native input sequence.
+            if header.split(",", 1)[0].strip().casefold() == INIT_HEADER.casefold():
                 continue
+            n_designed += 1
 
             # Bare column names; the driver leaf-prefixes them.
             data: Dict[str, Any] = {"iteration": i, "sequence": sequence}
@@ -150,6 +123,12 @@ def collect_atomium(ctx: CollectCtx) -> CollectEach:
                 parent=d.name,
                 path=fasta_path,
                 data=data,
+            )
+
+        if n_designed == 0:
+            print(
+                f"{d.name}: FASTA has {n_entries} entr(y/ies), "
+                "none designed (skipping)"
             )
 
     return one

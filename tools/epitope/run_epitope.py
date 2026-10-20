@@ -101,6 +101,7 @@ Usage:
         --dir-label bb
 """
 
+import math
 import re
 from argparse import ArgumentParser
 from pathlib import Path
@@ -131,6 +132,7 @@ class EpitopeArgs(CommonArgs):
     hotspots: str
     contact_cutoff: float
     designs_per_task: int
+    clash_cutoff: float
     sequence_column: str | None
 
 
@@ -265,6 +267,20 @@ def add_run_epitope_args(parser: ArgumentParser) -> None:
         "another recall at the same cutoff.",
     )
     parser.add_argument(
+        "--clash-cutoff",
+        type=float,
+        default=2.5,
+        help="Heavy-atom distance (A) below which a design atom and a target atom "
+        "OVERLAP (added 2026-10-08; default 2.5 -- the same VALUE as ringfit's "
+        "default, but epitope counts atom PAIRS while ringfit_n_clash counts binder "
+        "atoms, so the counts are never comparable). Feeds epitope_n_clash, "
+        "epitope_n_clash_design_res, epitope_n_clash_bb and epitope_n_clash_bbcb only "
+        "and is echoed as "
+        "epitope_clash_cutoff; no pre-existing column depends on it. A geometric "
+        "overlap test between atoms of different chains: hydrogen-bond and salt-"
+        "bridge distances (2.5-3.0 A) are NOT counted. Must be > 0.",
+    )
+    parser.add_argument(
         "--designs-per-task",
         type=int,
         default=20,
@@ -316,6 +332,9 @@ def build_epitope_manifest(ctx: ManifestCtx[EpitopeArgs]) -> list[tuple[str, ...
 
     if ctx.args.contact_cutoff <= 0:
         raise ValueError("--contact-cutoff must be > 0.")
+    clash_cutoff = float(ctx.args.clash_cutoff)
+    if not math.isfinite(clash_cutoff) or clash_cutoff <= 0:
+        raise ValueError(f"--clash-cutoff must be a positive number, got {clash_cutoff}.")
     if ctx.args.designs_per_task < 1:
         raise ValueError("--designs-per-task must be >= 1.")
 
@@ -447,6 +466,10 @@ def build_epitope_manifest(ctx: ManifestCtx[EpitopeArgs]) -> list[tuple[str, ...
                 # by index, so new fields go on the END, never in the middle.
                 seq_source,
                 column,
+                # Appended 2026-10-08, always non-empty; the END again, so the six
+                # fields above keep their indices (epitope.sh defaults a missing
+                # 7th field to 2.5, so a 6-field manifest still runs).
+                str(clash_cutoff),
             )
         )
 

@@ -16,7 +16,7 @@ vib-worker ---- bash scripts/vib.sh exec ---->   login node: squeue, sacct, sinf
 | Command | Does |
 | --- | --- |
 | `exec [--sync] [--timeout S] '<cmd>'` | runs `<cmd>` in the workspace, venv active, `.env` loaded; `--sync` pushes first |
-| `exec --on-node [--cpus N] [--mem S] [--walltime H:MM:SS] '<cmd>'` | the same, inside a small `srun` (defaults 2 cpus, 8G, 0:30:00; `--cpus` capped at 8; ssh timeout 1800 s) instead of the login node. Drops the job's own `SLURM_*` variables so a `sapia run` inside it does not inherit the small allocation's resources. Use it for `sapia run`, `sapia collect` and anything that reads tables; keep `squeue`/`sacct` polls on the login node |
+| `exec --on-node [--cpus N] [--mem S] [--walltime H:MM:SS] '<cmd>'` | the same, inside a small `srun` (defaults 2 cpus, 8G, 0:30:00; `--cpus` capped at 8; ssh timeout 1800 s) instead of the login node. Drops the job's own `SLURM_*` variables so a `sapia run` inside it does not inherit the small allocation's resources. Use it for `sapia run`, `sapia collect` and anything that reads tables; keep `squeue`/`sacct` polls on the login node. It has no node-exclusion option (see the workarounds below) |
 | `sync [--dry-run]` | pushes `tools/`, `activation/`, `utils/` and `.env` |
 | `check '<cmd>'` | runs the guard only |
 | `init [--adopt]` | creates the workspace and its `.sapia-workspace` marker; `--adopt` for an existing one |
@@ -31,6 +31,7 @@ vib-worker ---- bash scripts/vib.sh exec ---->   login node: squeue, sacct, sinf
 - `sync` copies only `tools/ activation/ utils/ .env`, and `--delete` acts only inside those directories. `outputs/`, `.venv/` and everything else in the workspace are unreachable by construction. It also refuses unless the remote directory holds the `.sapia-workspace` marker, so a mistyped path cannot be wiped.
 - It is an accident guard, not a sandbox. Code inside `srun ... bash -lc '...'` is still your user. The hard limit is your Unix permissions on group storage.
 - Every ssh runs under `timeout`. rc 255 or 124 usually means the certificate lapsed: sign in, do not retry in a loop.
+- **Free-space checks on group storage are unreliable.** `df` shows the whole shared filesystem (petabytes free) and `quota -s` prints nothing, but writes still fail with errno 28 `No space left on device` when a group or directory quota is reached. Signature: running tasks exit 1, queued tasks fail at launch with ExitCode `0:53` and no log file, other jobs of the same account fail too, and a 1 KB write test fails in milliseconds in every directory of the run_dir until it clears. Ask the user for the quota and the current usage before a disk-heavy run (AF3 writes about 12.9 MB per design); `du -sk` of your own `outputs/` is allowed and slow.
 
 ## `.env`: three readers
 
@@ -43,12 +44,25 @@ Both prosapia reads must reach the same file, which is why the venv lives **insi
 
 ## The venv, `uv`, and the pin
 
-- **`bootstrap` uses the cluster's `uv`**, loaded with `module load uv` inside the compute-node allocation (`bash -lc` is what makes `module` available). Default: `uv sync --frozen` from the `pyproject.toml` and `uv.lock` that `bootstrap` pushes, so the install matches Modal's. Nothing else uses `uv` on vib, and your machine still needs none for vib.
-- **The interpreter is the EasyBuild Python that `module load uv` brings along** (3.13.5 when measured 2026-10-17). `bootstrap` sets `UV_PYTHON_PREFERENCE=only-system`, because otherwise `uv` prefers a managed Python downloaded into `$HOME` and the venv would link into one user's home directory. The venv's `python` is a symlink into the module tree and runs with an empty environment, so tasks do not need the module loaded. `UV_LINK_MODE=copy` stops `uv` warning that its cache (in `$HOME`) and the venv (group storage) are on different filesystems.
-- **A `uv` venv has no `pip`.** `status` reads the installed prosapia commit from the package's `direct_url.json` instead of `pip freeze`.
+- **`bootstrap` uses the cluster's `uv`**, loaded with `module load uv` inside the compute-node allocation (`bash -lc` is what makes `module` available). Default: `uv sync --frozen` from the `pyproject.toml` and `uv.lock` that `bootstrap` pushes, so the install matches Modal's. Your machine needs no `uv` for vib.
+- **The interpreter is the EasyBuild Python that `module load uv` brings along.** `bootstrap` sets `UV_PYTHON_PREFERENCE=only-system`, because otherwise `uv` prefers a managed Python downloaded into `$HOME` and the venv would link into one user's home. The venv's `python` is a symlink into the module tree and runs with an empty environment, so tasks do not need the module loaded. `UV_LINK_MODE=copy` stops `uv` warning that its cache (in `$HOME`) and the venv (group storage) are on different filesystems.
+- **A `uv` venv has no `pip`.** `status` reads the installed prosapia commit from the package's `direct_url.json`.
 - rsync never touches the venv. After a pin change, re-run `bootstrap`; `status` shows a mismatch.
 - If `uv.lock` points at the editable `../prosapia` checkout, the default `bootstrap` stops. Pass `--commit <sha>` with a **pushed** commit: that path runs `uv venv` and `uv pip install` of the commit, with no lock, so transitive dependencies are resolved fresh and can differ from Modal's.
 
 ## The shared activation scripts
 
-`SAPIA_VIB_SHARED_ACTIVATION` points at the lab's scripts for the built-in tools. The software they activate (rfd3, ProteinMPNN, Boltz, AF3...) is installed on the cluster and is not in this repo, so syncing the repo does not replace them. What the workspace venv replaced is the shared **python env** that `sapia` itself used to run from. (The scripts' contents live on the cluster and are not versioned here; copying them into `activation/vib/` would version them but not the software.)
+`SAPIA_VIB_SHARED_ACTIVATION` points at the lab's scripts for the built-in tools. The software they activate (rfd3, ProteinMPNN, Boltz, AF3...) is installed on the cluster and is not in this repo, so syncing the repo does not replace them. What the workspace venv replaced is the shared **python env** that `sapia` itself used to run from. Their contents live on the cluster and are not versioned here.
+
+## Cluster workarounds
+
+Tools and the vib-worker apply these without being told.
+
+**Known bad nodes:** p-computegp-6
+
+- **A bad node hangs tasks or allocations.** For every node in the list above, run on-node steps in your own `srun` instead of `exec --on-node`: `bash scripts/vib.sh exec 'srun -A "$SAPIA_VIB_ACCOUNT" --exclude=<node> -c 2 --mem=8G -t 0:30:00 bash -lc ". .venv/bin/activate; unset \$(compgen -v SLURM_); <command>"'`, with at least 2 CPUs. Exclude the node from arrays too.
+- **The cluster may drop `SBATCH_EXCLUDE`**, so exporting it before `sapia run` is not enough. Submit CPU arrays small (a low `-C`), then, while tasks are pending, `scontrol update JobId=<id> ExcNodeList=<node> Account=$SAPIA_VIB_ACCOUNT` and raise the concurrency with `scontrol update JobId=<id> ArrayTaskThrottle=<n> Account=$SAPIA_VIB_ACCOUNT` (the `Account=` is required on every update), and verify on a pending task with `scontrol show job <id>` that `ExcNodeList` took.
+- **GPU work goes only to `_co_pi` partitions** where the GPU type has one (never the plain `gpu_h100_*` / `gpu_b300_*`), written `--partitions <name>:<gpu_count>`; the partition table is in `.claude/agents/vib-worker.md`.
+- **A sync is its own call**: run `bash scripts/vib.sh sync` first, then submit with `exec --on-node` and no `--sync`, so a stalled sync is not mistaken for a stalled submit.
+- **An array's logs are in the leaf's logs dir**: `<run_dir>/<table>/<leaf>/<script>_logs/<script>_<jobid>_<taskidx>.out` and `.err`, one pair per task.
+- **Allow for slow login-node globs.** Listing or globbing a leaf with thousands of files can outlast the default 120 s ssh timeout: pass `--timeout 300` or more, or count inside an allocation.

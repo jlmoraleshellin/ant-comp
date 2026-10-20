@@ -78,6 +78,29 @@ min_dist, is_hotspot -- EVERY target residue, contacted or not) plus one
                           STRUCTURE. A disagreement with seq_len is an 'error:',
                           never a truncated or padded mapping.
 
+  STERIC OVERLAP (added 2026-10-08) -- the same heavy atoms, read for overlap:
+    min_dist_any          smallest heavy-atom distance between ANY design atom and
+                          ANY target atom, A (<= min_dist_hotspot always)
+    n_clash               design/target heavy-atom PAIRS closer than clash_cutoff.
+                          0 is a real zero on an OK row; NA on every error row.
+                          Unit = atom PAIRS: never comparable with ringfit_n_clash,
+                          which counts binder ATOMS.
+    n_clash_design_res    distinct design residues in >= 1 clash pair (the same
+                          quantity as ringfit_n_clash_res)
+    clash_cutoff          the A cutoff used (--clash-cutoff, default 2.5)
+    min_dist_bb           as min_dist_any with the DESIGN side restricted to its
+                          backbone (N, CA, C, O, OXT); >= min_dist_any
+    n_clash_bb            as n_clash over those pairs; <= n_clash. Both NA when the
+                          design chains have no backbone-named atoms. The overlap
+                          sequence design cannot remove. CB NOT included: the
+                          FLOOR (lenient reading).
+    min_dist_bbcb         as min_dist_bb with CB added (CB persists under every
+    n_clash_bbcb          sequence except GLY): the honest persistent set and THE
+                          GATE for a generator backbone. any <= bbcb <= bb for the
+                          distance, bb <= bbcb <= any for the count.
+    Geometry, not an energy; H-bond / salt-bridge distances (2.5-3.0 A) are not
+    clashes. On a backbone-only binder there are no side chains to clash.
+
   THE ECHO OF WHAT WAS ASKED:
     design_chains         the binder chain(s) actually scored
     target_chains         the target chain(s) actually scored
@@ -97,12 +120,14 @@ lineage), a --sequence-column whose length disagrees with the structure or which
 holds a multi-chain '/' string, or a crashed worker; 'missing' when the design has
 no TSV at all.
 
-BACKWARD COMPATIBILITY. The columns added on 2026-09-30 and 2026-10-02 are
-appended, never substituted: every pre-existing column keeps its name, type,
+BACKWARD COMPATIBILITY. The columns added on 2026-09-30, 2026-10-02 and 2026-10-08
+are appended, never substituted: every pre-existing column keeps its name, type,
 formatting and meaning, and with --sequence-column omitted every pre-existing
-number is bit-for-bit what it was. Rows collected before those dates simply have
-the newer columns empty -- a missing column in the per-design TSV reads back as
-NA, like any other unmeasured metric.
+number is bit-for-bit what it was (--clash-cutoff feeds only the 2026-10-08
+columns). Rows collected before those dates simply have the newer columns empty --
+a missing column in the per-design TSV reads back as NA, like any other unmeasured
+metric. To backfill, re-run with --force under the same -l label AND collect with
+--force (without it, already-OK rows are skipped and keep the old, empty cells).
 
 Usage:
     sapia collect epitope outputs/20260930_egfr_binder --table table1 -l pred
@@ -149,7 +174,22 @@ STR_COLUMNS = [
     # --- added 2026-10-02 ---
     "hotspot_contacts",
 ]
-RESULT_COLUMNS = FLOAT_COLUMNS + INT_COLUMNS + STR_COLUMNS
+# --- added 2026-10-08: steric overlap. Kept in their OWN typed list and appended
+# at the END of RESULT_COLUMNS, so every pre-existing column keeps its position in a
+# freshly collected table as well as its name and type.
+CLASH_COLUMNS: dict[str, type] = {
+    "min_dist_any": float,
+    "n_clash": int,
+    "n_clash_design_res": int,
+    "clash_cutoff": float,
+    # second 2026-10-08 pass: design BACKBONE vs every target heavy atom
+    "min_dist_bb": float,
+    "n_clash_bb": int,
+    # third 2026-10-08 pass: design backbone PLUS CB vs every target heavy atom
+    "min_dist_bbcb": float,
+    "n_clash_bbcb": int,
+}
+RESULT_COLUMNS = FLOAT_COLUMNS + INT_COLUMNS + STR_COLUMNS + list(CLASH_COLUMNS)
 
 
 def _empty() -> dict[str, Any]:
@@ -177,6 +217,9 @@ def _fields(row: pd.Series) -> dict[str, Any]:
     for col in STR_COLUMNS:
         if (value := _present(row, col)) is not None:
             data[col] = str(value)
+    for col, kind in CLASH_COLUMNS.items():
+        if (value := _present(row, col)) is not None:
+            data[col] = int(float(value)) if kind is int else float(value)
     return data
 
 

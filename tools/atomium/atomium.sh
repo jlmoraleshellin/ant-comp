@@ -12,16 +12,15 @@ set -euo pipefail
 # Shared scaffolding: sets MANIFEST/OUT_DIR/SAPIA_TASK_ID/SAPIA_LINE.
 source "${SAPIA_PRELUDE:?}"
 
-# Site-specific activation (required off Modal) — see docs/configuration.md.
-# Under Modal this is a no-op and the image supplies $ATOMIUM.
+# Site activation (required off Modal; a no-op there, the image supplies $ATOMIUM).
 sapia_activate SAPIA_ACTIVATE_ATOMIUM
 
 ATOMIUM_PYTHON=${ATOMIUM_PYTHON:-python}
 : "${ATOMIUM:?ATOMIUM must point at the AtomiUM checkout (the image sets it on Modal; the activation script elsewhere)}"
 
-# ProteinMPNN's helper scripts. On Modal they ship inside the AtomiUM checkout. On vib that
-# checkout has no proteinMPNN_helper_scripts/, so the vib ACTIVATION SCRIPT exports PROTEINMPNN_HELPERS,
-# the cluster's ProteinMPNN `helper_scripts` directory itself. 
+# PYG_HOME (a per-task PyG cache) is exported by the vib ACTIVATION SCRIPT
+
+# ProteinMPNN helpers: in the checkout on Modal; on vib the activation script exports PROTEINMPNN_HELPERS.
 HELPERS=${PROTEINMPNN_HELPERS:-"$ATOMIUM/proteinMPNN_helper_scripts"}
 # All four are checked up front: a missing one would otherwise kill the task mid-loop
 for h in parse_multiple_chains assign_fixed_chains make_fixed_positions_dict make_tied_positions_dict; do
@@ -30,21 +29,12 @@ for h in parse_multiple_chains assign_fixed_chains make_fixed_positions_dict mak
         exit 1
     fi
 done
-# Provenance: which helper source this run used (the .out is the only place it is recorded).
+# Provenance: the .out is the only place the helper source is recorded.
 echo "atomium: HELPERS=$HELPERS"
 
-# One task = one sub-manifest listing the subgroups packed onto it. Each subgroup is
-# a grp_<g>/ dir whose inputs/ holds symlinked PDBs that share params, so it runs as
-# ONE batched atomium.py call (model loaded once). Subgroups run sequentially on the
-# task's single GPU. Sub-manifest rows are tab-separated:
-#   grp_dir  chains  fixed_positions  tie_mode  tied_positions  sampling_temp  extra
-# chains, fixed_positions, tie_mode and tied_positions may be empty AND are adjacent,
-# so fields are pulled with `cut` (IFS=$'\t' read collapses empty tab fields).
-#
-# Locals are lowercase on purpose: an uppercase name that collides with a bash
-# special variable (GROUPS, UID, PIPESTATUS…) fails its assignment under `set -e` and
-# kills the task before it prints anything. See the trap note in authoring-a-tool.
+# One task = one sub-manifest; row: grp_dir chains fixed_positions tie_mode tied_positions sampling_temp extra
 run_one_group() {
+    # Lowercase locals: an uppercase bash special (GROUPS, UID...) kills the task under `set -e`.
     local grp_dir=$1 chains=$2 fixed_positions=$3 tie_mode=$4
     local tied_positions=$5 sampling_temp=$6 extra=$7
 
@@ -59,8 +49,7 @@ run_one_group() {
     "$ATOMIUM_PYTHON" "$HELPERS/parse_multiple_chains.py" \
         --input_path="$inputs" --output_path="$parsed"
 
-    # Optional side-input jsonls, each appended to the run only when produced. Every
-    # per-chain helper shares the one $chains list as its --chain_list.
+    # Side-input jsonls, appended only when produced; every per-chain helper shares $chains.
     local side=()
 
     if [ -n "$chains" ]; then
@@ -77,8 +66,7 @@ run_one_group() {
         side+=(--fixed_positions_jsonl "$fixed")
     fi
 
-    # Tying: homo => --homooligomer 1 (all chains, auto-detected); explicit => per-chain
-    # --chain_list/--position_list. --homooligomer defaults to 0, so it is never passed.
+    # Tying: homo => --homooligomer 1 (all chains); explicit => per-chain lists.
     if [ "$tie_mode" = "homo" ]; then
         "$ATOMIUM_PYTHON" "$HELPERS/make_tied_positions_dict.py" \
             --input_path="$parsed" --output_path="$tied" --homooligomer 1
@@ -90,11 +78,7 @@ run_one_group() {
         side+=(--tied_positions_jsonl "$tied")
     fi
 
-    # $extra (typed run flags + optional --bias_AA_jsonl + user --set tokens) is
-    # unquoted so each space-separated token becomes its own argv entry; it is built
-    # whitespace-free for exactly that reason. $sampling_temp is quoted instead --
-    # it may hold several temperatures ("0.1 0.2") that must stay ONE argument.
-    # Outputs land in $grp_dir/seqs/<design>.fa (one fasta per staged input).
+    # $extra is unquoted (one argv entry per token); $sampling_temp is quoted (several temperatures, ONE argument).
     "$ATOMIUM_PYTHON" "$ATOMIUM/atomium.py" \
         --jsonl_path "$parsed" \
         --out_folder "$grp_dir" \
@@ -105,6 +89,7 @@ run_one_group() {
 
 SUBMANIFEST=$(printf '%s' "$SAPIA_LINE" | cut -f1)
 
+# cut, not read: IFS=$'\t' read collapses the empty tab fields (chains, positions, tie_mode).
 while IFS= read -r row || [ -n "$row" ]; do
     [ -z "$row" ] && continue
     run_one_group \

@@ -30,6 +30,56 @@ waters excluded; a ligand sitting in a named chain counts as part of that chain)
     hotspot_contacts    the per-hotspot pair counts in the order listed,
                         'A24=0,A36=3,A99=21'.
 
+STERIC OVERLAP (added 2026-10-08). The same heavy atoms, the same two chain sets,
+the same residue universe (hydrogens and waters out), read for overlap instead of
+contact:
+
+    min_dist_any        the smallest heavy-atom distance between ANY design atom
+                        and ANY target atom, over all target residues -- the
+                        minimum of the per-residue file's min_dist column, so it
+                        is always <= min_dist_hotspot.
+    n_clash             design/target heavy-atom PAIRS strictly closer than
+                        --clash-cutoff (default 2.5 A -- the same cutoff VALUE as
+                        ringfit's default, but NOT the same count: the unit here is
+                        atom PAIRS, while ringfit_n_clash counts binder ATOMS, so
+                        the numbers are never comparable).
+                        Non-bonded atoms of different chains below 2.5 A overlap;
+                        hydrogen-bond and salt-bridge distances (2.5-3.0 A) are not
+                        counted. 0 is a real, measured zero on an OK row, and, when
+                        both are numbers, n_clash == 0 exactly when min_dist_any >=
+                        the cutoff (both are NA together when the target chains hold
+                        no heavy atoms).
+    n_clash_design_res  DISTINCT design residues with >= 1 clash pair (residues,
+                        not atoms) -- the same quantity as ringfit_n_clash_res.
+    clash_cutoff        the echo of the cutoff used.
+    min_dist_bb         as min_dist_any, but with the DESIGN side restricted to its
+                        BACKBONE atoms (N, CA, C, O, OXT of amino-acid residues);
+                        the target side is still every heavy atom. Always >=
+                        min_dist_any.
+    n_clash_bb          as n_clash over those pairs; always <= n_clash, and 0
+                        exactly when min_dist_bb >= the cutoff (when both are
+                        numbers). Both NA -- not 0 -- when the design chains have no
+                        backbone-named atoms. On a generator backbone the design's
+                        side chains are generator artifacts that sequence design
+                        replaces, while its backbone persists and the target's side
+                        chains are real and fixed: backbone-vs-any-target-atom is
+                        the overlap no sequence design can remove. On a
+                        backbone-only file these equal min_dist_any and n_clash.
+                        CB is NOT in this set -- this is the FLOOR (lenient).
+    min_dist_bbcb       as min_dist_bb with CB added to the design set (N, CA, C,
+    n_clash_bbcb        O, OXT, CB). CB's position is fixed by N, CA and C, so a
+                        CB overlap persists under every sequence except GLY -- a
+                        real design cost at an interface. The honest persistent
+                        set: min_dist_any <= min_dist_bbcb <= min_dist_bb and
+                        n_clash_bb <= n_clash_bbcb <= n_clash; n_clash_bbcb is 0
+                        exactly when min_dist_bbcb >= the cutoff (when both are
+                        numbers). NA when the design chains have no atom of the
+                        set. With no CB anywhere (poly-GLY) they equal the bb pair.
+
+This is geometry: not an energy, and not a statement that the target (or the
+binder) is valid. A clash count is only as good as the atoms present -- a
+backbone-only binder has no side chains to clash with.
+
 WEIGHT IS NOT PRESENCE. hotspot_recall answers 'did it touch the epitope'; the
 three columns above answer 'how much of the binding is on it'. On a target where
 nearly every binder grazes one residue, recall discriminates nothing and the share
@@ -167,8 +217,33 @@ METRIC_COLUMNS = [
     "hotspot_n_contacts",
     "hotspot_contact_frac",
     "hotspot_contacts",
+    # --- added 2026-10-08: STERIC OVERLAP between the two sides, from the same
+    # heavy atoms. Geometry only -- not an energy, not a validity statement ---
+    "min_dist_any",
+    "n_clash",
+    "n_clash_design_res",
+    "clash_cutoff",
+    # --- added 2026-10-08 (second pass): the DESIGN BACKBONE against every target
+    # heavy atom -- the overlap sequence design cannot remove ---
+    "min_dist_bb",
+    "n_clash_bb",
+    # --- added 2026-10-08 (third pass): backbone PLUS CB -- CB is fixed by N, CA,
+    # C, so its overlap persists under every sequence except GLY ---
+    "min_dist_bbcb",
+    "n_clash_bbcb",
 ]
+
+# Design-side atoms that survive sequence design.
+BACKBONE_ATOMS = {"N", "CA", "C", "O", "OXT"}
+# ... plus CB, whose position the backbone fixes (removable only by choosing GLY).
+BACKBONE_CB_ATOMS = frozenset(BACKBONE_ATOMS | {"CB"})
 RESULT_COLUMNS = ["name", "status", "path", *METRIC_COLUMNS]
+
+# Default --clash-cutoff (A): the same cutoff VALUE as ringfit's default (but a
+# different unit: epitope counts atom PAIRS, ringfit_n_clash counts binder atoms). A
+# pair of heavy atoms from DIFFERENT chains closer than this overlaps; hydrogen-bond
+# and salt-bridge distances (2.5-3.0 A) are deliberately NOT counted.
+DEFAULT_CLASH_CUTOFF = 2.5
 PER_RESIDUE_COLUMNS = [
     "chain",
     "resnum",
@@ -324,6 +399,83 @@ def contacts_per_residue(
     return counts, min_dists
 
 
+def overlap(
+    design: list[Res], target_xyz: np.ndarray, cutoff: float
+) -> tuple[int | None, int | None]:
+    """(n_clash, n_clash_design_res): heavy-atom PAIRS (design atom, target atom)
+    closer than ``cutoff``, and the number of DISTINCT design residues taking part
+    in at least one such pair. (None, None) when the target has no heavy atoms
+    (nothing was measured -- never a zero).
+
+    "Closer than" is decided on the distance ROUNDED TO 0.001 A, exactly as every
+    distance this tool writes (the per-residue min_dist, min_dist_hotspot,
+    min_dist_any) is rounded -- so n_clash == 0 if and only if min_dist_any >=
+    cutoff, with no disagreement at the third decimal. The rounding is Python's
+    round(), applied only to the few pairs within 0.001 A of the cutoff; every other
+    pair is unambiguous on the raw distance.
+    """
+    if len(target_xyz) == 0:
+        return None, None
+    n_pairs = 0
+    n_res = 0
+    for res in design:
+        if len(res.heavy) == 0:
+            continue
+        d = np.linalg.norm(res.heavy[:, None, :] - target_xyz[None, :, :], axis=-1)
+        n = count_below(d, cutoff)
+        n_pairs += n
+        n_res += int(n > 0)
+    return n_pairs, n_res
+
+
+def count_below(d: np.ndarray, cutoff: float) -> int:
+    """Distances whose value ROUNDED TO 0.001 A is strictly below ``cutoff``.
+    Python's round() is applied only to the pairs within 0.001 A of the cutoff;
+    every other pair is unambiguous on the raw distance."""
+    lo, hi = cutoff - 0.001, cutoff + 0.001
+    n = int((d < lo).sum())
+    border = d[(d >= lo) & (d < hi)]
+    return n + sum(1 for x in border if round(float(x), 3) < cutoff)
+
+
+def backbone_atoms(
+    model: gemmi.Model,
+    chain_names: list[str],
+    # A frozen COPY: an in-place change to BACKBONE_ATOMS cannot redefine n_clash_bb.
+    atom_names: frozenset[str] = frozenset(BACKBONE_ATOMS),
+) -> np.ndarray:
+    """(M, 3) BACKBONE atoms (N, CA, C, O, OXT) of the amino-acid residues of the
+    named chains, from the same model the rest of the measurement uses (altlocs and
+    hydrogens already removed, waters skipped). A ligand or ion in a design chain
+    has no backbone and contributes nothing here."""
+    coords = []
+    for name in chain_names:
+        for chain in model:
+            if chain.name != name:
+                continue
+            for res in chain:
+                if _is_water(res) or not _is_amino_acid(res.name.strip()):
+                    continue
+                coords.extend(
+                    [a.pos.x, a.pos.y, a.pos.z]
+                    for a in res
+                    if a.name.strip() in atom_names and _is_heavy(a)
+                )
+    return np.asarray(coords, dtype=float).reshape(-1, 3)
+
+
+def backbone_overlap(
+    bb_xyz: np.ndarray, target_xyz: np.ndarray, cutoff: float
+) -> tuple[float | None, int | None]:
+    """(min_dist_bb, n_clash_bb): design-backbone vs every target heavy atom, with
+    the same rounding rules as min_dist_any / n_clash. (None, None) -- never 0 --
+    when either side has no atoms."""
+    if len(bb_xyz) == 0 or len(target_xyz) == 0:
+        return None, None
+    d = np.linalg.norm(bb_xyz[:, None, :] - target_xyz[None, :, :], axis=-1)
+    return round(float(d.min()), 3), count_below(d, cutoff)
+
+
 def design_identities(
     design: list[Res], sequence: str, seq_source: str, src_name: str
 ) -> tuple[dict[str, str], int, int]:
@@ -382,6 +534,7 @@ def score(
     contact_cutoff: float,
     sequence: str = "",
     seq_source: str = SEQ_SOURCE_STRUCTURE,
+    clash_cutoff: float = DEFAULT_CLASH_CUTOFF,
 ) -> tuple[str, dict, list[list]]:
     """One structure -> (status, metrics, per-target-residue rows). Raises on
     anything that makes the measurement impossible or dishonest; main() records the
@@ -535,6 +688,42 @@ def score(
         ),
     }
 
+    # STERIC OVERLAP (added 2026-10-08). min_dist_any is the minimum of the very
+    # per-residue min_dist values written to the per-residue file (each already
+    # rounded to 0.001 A), so it equals that file's column minimum exactly and can
+    # never exceed min_dist_hotspot (a minimum over a subset of the same values).
+    measured = [d for d in min_dists if d is not None]
+    n_clash, n_clash_design_res = overlap(design, target_xyz, clash_cutoff)
+    metrics["min_dist_any"] = min(measured) if measured else None
+    metrics["n_clash"] = n_clash
+    metrics["n_clash_design_res"] = n_clash_design_res
+    metrics["clash_cutoff"] = clash_cutoff
+    # The design BACKBONE against every target heavy atom (second 2026-10-08 pass).
+    # A subset of the pairs above, so min_dist_bb >= min_dist_any and n_clash_bb <=
+    # n_clash; on a backbone-only design chain the pair sets are identical.
+    bb_xyz = backbone_atoms(model, design_chains)
+    if len(bb_xyz) == 0:
+        print(
+            f"{src.name}: design chain(s) {','.join(design_chains)} have no "
+            f"backbone-named atoms (N/CA/C/O/OXT of amino-acid residues) -- "
+            f"min_dist_bb and n_clash_bb are NA for this design"
+        )
+    metrics["min_dist_bb"], metrics["n_clash_bb"] = backbone_overlap(
+        bb_xyz, target_xyz, clash_cutoff
+    )
+    # Backbone PLUS CB (third 2026-10-08 pass): a superset of the bb pairs and a
+    # subset of all pairs, so the three readings bracket each other exactly.
+    bbcb_xyz = backbone_atoms(model, design_chains, BACKBONE_CB_ATOMS)
+    if len(bbcb_xyz) == 0:
+        print(
+            f"{src.name}: design chain(s) {','.join(design_chains)} have no "
+            f"N/CA/C/O/OXT/CB atoms on amino-acid residues -- min_dist_bbcb and "
+            f"n_clash_bbcb are NA for this design"
+        )
+    metrics["min_dist_bbcb"], metrics["n_clash_bbcb"] = backbone_overlap(
+        bbcb_xyz, target_xyz, clash_cutoff
+    )
+
     hotspot_set = set(hotspots)
     rows = [
         [
@@ -580,11 +769,20 @@ def write_result(out_dir: Path, name: str, status: str, path: str, metrics: dict
     )
 
 
+def positive_float(text: str) -> float:
+    """argparse type: a finite float > 0."""
+    value = float(text)
+    if not np.isfinite(value) or value <= 0:
+        raise argparse.ArgumentTypeError(f"must be a positive number, got {text!r}")
+    return value
+
+
 class Args(argparse.Namespace):
     task_file: Path
     design_chains: str
     target_chains: str
     contact_cutoff: float
+    clash_cutoff: float
     seq_source: str
     input_column: str
     out_dir: Path
@@ -607,6 +805,15 @@ def main() -> None:
     ap.add_argument("--design-chains", required=True, help="Comma-joined chain IDs.")
     ap.add_argument("--target-chains", required=True, help="Comma-joined chain IDs.")
     ap.add_argument("--contact-cutoff", type=float, default=5.0)
+    ap.add_argument(
+        "--clash-cutoff",
+        type=positive_float,
+        default=DEFAULT_CLASH_CUTOFF,
+        help="Heavy-atom distance (A) below which a design atom and a target atom "
+        "overlap (strictly closer than, on distances rounded to 0.001 A). Default "
+        f"{DEFAULT_CLASH_CUTOFF}. Feeds n_clash / n_clash_design_res / n_clash_bb / "
+        "n_clash_bbcb only; every pre-existing column is independent of it.",
+    )
     ap.add_argument(
         "--seq-source",
         default=SEQ_SOURCE_STRUCTURE,
@@ -672,6 +879,7 @@ def main() -> None:
                 args.contact_cutoff,
                 sequence,
                 args.seq_source,
+                args.clash_cutoff,
             )
             write_tsv(per_res_path, PER_RESIDUE_COLUMNS, rows)
             write_result(args.out_dir, name, status, str(per_res_path), metrics)

@@ -5,13 +5,16 @@
 #SBATCH --job-name=chainsel
 
 # Extract one design's chain subset per array task, and write a per-design TSV
-# (name, status, path, n_chains, n_res, chains, n_atoms) for collect_chainsel.py
+# (name, status, path, n_chains, n_res, chains, n_atoms[, chain_n_res,
+# chain_mean_b in split mode]) for collect_chainsel.py
 # to merge back. CPU-only. The worker needs gemmi, so it runs under
 # $PIPELINE_PYTHON (defaulting to `python`).
 #
 # The manifest carries the selection in its canonical group form
 # ('<chain>[+<chain>...]:<out_id>', comma-joined), so a plain --chains run and a
-# --merge-groups run are one code path here and in the worker.
+# --merge-groups run are one code path here and in the worker. A --split-groups run
+# leaves the group field empty and carries its canonical split spec in field 5
+# instead; the worker takes its own split path when that field is non-empty.
 
 set -euo pipefail
 
@@ -33,9 +36,10 @@ SRC=$(echo "$SAPIA_LINE" | cut -f2)
 # with EMPTY .out and .err. Same hazard: UID, EUID, PPID, PIPESTATUS, SECONDS.
 SEL_GROUPS=$(echo "$SAPIA_LINE" | cut -f3)
 RENUMBER_FROM=$(echo "$SAPIA_LINE" | cut -f4)
-OUT_FORMAT=$(echo "$SAPIA_LINE" | cut -f5)
-HET_MODE=$(echo "$SAPIA_LINE" | cut -f6)
-RENUMBER_MODE=$(echo "$SAPIA_LINE" | cut -f7)
+SPLIT_SPEC=$(echo "$SAPIA_LINE" | cut -f5)
+OUT_FORMAT=$(echo "$SAPIA_LINE" | cut -f6)
+HET_MODE=$(echo "$SAPIA_LINE" | cut -f7)
+RENUMBER_MODE=$(echo "$SAPIA_LINE" | cut -f8)
 
 RESULT_TSV="$OUT_DIR/${NAME}.tsv"
 OUT_STRUCT="$OUT_DIR/${NAME}.${OUT_FORMAT}"
@@ -51,7 +55,7 @@ if [[ "$RENUMBER_MODE" == "renumber" ]]; then
     EXTRA+=(--renumber)
 fi
 
-echo "[$(date +%T)] task $SAPIA_TASK_ID: chainsel $SEL_GROUPS for $NAME"
+echo "[$(date +%T)] task $SAPIA_TASK_ID: chainsel ${SEL_GROUPS:-split $SPLIT_SPEC} for $NAME"
 
 # The worker lives next to this .sh; SAPIA_TOOL_DIR (exported by the driver) points
 # there, independent of the submit cwd. If the worker itself crashes (before it can
@@ -62,6 +66,7 @@ WORKER_RC=0
         --src "$SRC" \
         --groups "$SEL_GROUPS" \
         --renumber-from "$RENUMBER_FROM" \
+        --split-groups "$SPLIT_SPEC" \
         --out-format "$OUT_FORMAT" \
         ${EXTRA[@]+"${EXTRA[@]}"} \
         --out "$OUT_STRUCT" \

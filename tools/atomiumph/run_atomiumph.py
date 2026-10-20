@@ -1,50 +1,35 @@
-"""Submit tasks running AtomiUM's ``design_ph.py`` on binder COMPLEXES, spawning a
-child table with one row per designed sequence.
+"""Submit AtomiUM's ``design_ph.py`` on binder COMPLEXES, one child row per sequence.
 
-PREMISE -- read this before using any column it produces
---------------------------------------------------------
-``design_ph.py`` designs **pH-selective** binder sequences: it pins titratable binder
-residues (His/Asp/Glu) into a chosen protonation state and redesigns their environment
-so that state is favoured *in the complex more than in the free binder*. Its selection
-metric is therefore a DIFFERENCE OF DIFFERENCES::
+``design_ph.py`` designs pH-selective binders: it pins His/Asp/Glu centres into a
+protonation state and redesigns around them so that state is favoured in the complex
+more than in the free binder (``ddE = dE(complex) - dE(apo binder)``). The input must
+be a complex, so ``--binder-chains`` and ``--target-chains`` are required and disjoint,
+``--center-mode`` has no default, and ``--lam`` must contain 0.0 (the control cannot be
+recovered without a GPU rerun). Premise, columns and traps:
+``.claude/skills/atomiumph/SKILL.md``.
 
-    dE  = log p(target_state) - log p(comparison_state)   (one center, one context)
-    ddE = dE(complex) - dE(apo binder)
+``action="create"``: rows are ``<parent>_p<i>``, one per (lambda, sample) draw, so a
+structure yields ``len(--lam) x --num-seq`` rows.
 
-The input must be a **complex**: a binder chain set AND a target chain set, in the same
-file. Run it on a lone binder and there is no apo/complex contrast at all -- every ddE
-is structurally zero and the numbers mean nothing. There is no way for this tool to
-detect that for you beyond the chain checks below, so ``--binder-chains`` and
-``--target-chains`` are both REQUIRED and must be disjoint.
+``--binder-alone`` runs the binder with no target in the graph, to get the binder's own
+``core`` (design_ph counts burial over every chain present). ddE is then undefined (NA).
+Refused in this mode: a target chain, any ``--lam`` but 0.0, ``--placement-region
+interface``, ``--set`` of ``--placement_metric``/``--coupling_metric`` ``ddE``, a staged
+structure holding any chain but the binder, and flipping the flag in a leaf that holds
+output. ``--apo-weight`` and ``--charge-prior`` are sent, and recorded, as 0.0.
 
-``action="create"``: one child row per **(lambda, sample) draw**, named
-``<parent>_p<i>``. ``--num-seq`` is per lambda value, so the row count per input
-structure is ``len(--lam) x --num-seq``.
+Re-submits: ``_check_no_stale_outputs`` refuses a submit that would leave old output in
+the leaf, so retry failed parents with the whole same filter under the same label. The
+driver writes the sidecar before this builder runs, so even a refused submit moves its
+mtime (``atomiumph_output_predates_meta``); ``ctx.write_meta`` is therefore the
+builder's last statement.
 
-REFUSED AT SUBMIT
------------------
-* ``--binder-chains`` / ``--target-chains`` stay REQUIRED. The upstream client defaults
-  the binder to ``"A"`` and the target to ``""``; here the binder is the LAST chain, a
-  wrong-but-present letter redesigns the target with ``status == "OK"``, and an empty
-  target makes every ddE structurally zero.
-* ``--lam`` must contain ``0.0``. The upstream client only WARNS; this refuses at
-  submit, because the control cannot be recovered without re-running the sweep on GPU.
-  The duplicate / rendered-lambda checks are this tool's own, as are
-  ``--designs-per-task`` and the other run-shape flags.
-* ``--lam >= 1.0`` is NOT refused here, though the upstream client refuses it (sampling
-  becomes uniform); ``design_ph.py`` does not.
-
-BATCHING, AND THE LINEAGE CONTRACT IT RESTS ON
-----------------------------------------------
-Mirrors ``tools/atomium``: designs sharing a parameter signature are staged as symlinks
-into ``grp_<g>/inputs/<design_name>.pdb`` and run as ONE batched
-``design_ph.py --pdb_dir ... --pattern '*.pdb'`` call (checkpoint loaded once), and
-subgroups are bin-packed onto tasks up to ``--designs-per-task`` designs each. The
-symlink STEM is the parent-table row name, and ``design_ph.py`` names every output file
-after the input stem -- which is the whole of the lineage contract (see
-``collect_atomiumph.py``).
+Batching mirrors ``tools/atomium``: one ``design_ph.py --pdb_dir`` call per subgroup of
+symlinks ``grp_<g>/inputs/<name>.pdb``, bin-packed up to ``--designs-per-task``. The
+symlink stem is the parent row name, which is the lineage contract (see the collector).
 """
 
+import json
 from argparse import ArgumentParser
 from collections import defaultdict
 from pathlib import Path
@@ -54,15 +39,7 @@ from prosapia.core import CommonArgs, ManifestCtx
 from prosapia.core.executors import volume_path
 from prosapia.utils import ensure_pdb, expand_chain_spec
 
-# The fine-tuned 30-class (protonation-aware) checkpoints. DELIBERATELY NOT shared with
-# tools/atomium's MODEL_NOISES, which lists nine levels: the pH head exists only at
-# these two, and importing the other tuple would let n07 through to a GPU container that
-# then dies on a missing file.
-# Exactly what design_ph.py accepts at the pin (design_ph.py:2132-2134). All four are
-# fine-tuned 30-class pH checkpoints under ft_weights_for_pH/; the _v2 pair are
-# DIFFERENT weights, not a newer build of the same ones, so a table must never mix them
-# (atomiumph_model_noise is what says which). tools/atomium's n00..n07 are the 21-class
-# base weights and are still refused here.
+# The four 30-class pH checkpoints design_ph.py accepts (atomium's are 21-class).
 CHECKPOINT_NOISES = ("n03", "n05", "n03_v2", "n05_v2")
 
 CENTER_MODES = ("his_p", "his_s", "acid_p", "all_p")
@@ -72,38 +49,26 @@ COUPLING_PROBES = ("ala", "mask")
 SEED_MODES = ("native", "generate")
 OUTPUT_SCOPES = ("binder", "all")
 
-# Sidecar keys the collector reads back as trust columns. The chains are run-wide and
-# would otherwise die in the sub-manifest: without them the table cannot say WHICH
-# molecule these energies describe.
+# Sidecar keys read back by the collector as run-wide trust columns.
 EXPECTED_KEY = "atomiumph_expected_per_structure"
 BINDER_CHAINS_KEY = "atomiumph_binder_chains"
 TARGET_CHAINS_KEY = "atomiumph_target_chains"
-# Run-wide and decisive for how every row must be READ: --center-mode decides what a
-# high ddE_mean even means (which pH binds), and --output-scope all makes `sequence` a
-# slash-joined multi-chain string, at which point seq_len is no longer a binder length.
+# Run-wide, and decisive for reading rows: center_mode sets which pH binds.
 CENTER_MODE_KEY = "atomiumph_center_mode"
 OUTPUT_SCOPE_KEY = "atomiumph_output_scope"
-# MEASURED 2026-10-09: the model-noise level decides WHICH CENTRES design_ph picks --
-# two runs over the same structures chose different centres at n03 and n05 -- so two
-# noise levels are not comparable and the table must say which one a row came from.
-# Until now the only record was the dir label. The lambda sweep is recorded with it
-# because it is what makes `n_expected` a count rather than a number, and it says
-# whether the lambda=0.0 control arm was in this run at all.
+# The noise level decides WHICH centres are picked, so levels are not comparable.
 MODEL_NOISE_KEY = "atomiumph_model_noise"
 LAM_SWEEP_KEY = "atomiumph_lam_sweep"
-# Recorded for the same reason as the noise level: it changes WHICH positions the model
-# was allowed to touch, so two runs that differ only in it are not comparable, and the
-# table is otherwise silent about it. SEMANTICS UNVERIFIED -- see add_run_atomiumph_args.
+# Changes which positions may move, so runs differing in it are not comparable.
 PROTECT_TITRATABLE_KEY = "atomiumph_protect_titratable"
-# Modelled ONLY because the upstream client's default (0.5) differs from design_ph.py's
-# own (0.0): omitting the flag would silently run at 0.0 and not match upstream. It
-# changes what is sampled, so it is recorded like the noise level.
+# Modelled because the upstream client default (0.5) differs from design_ph's (0.0).
 APO_WEIGHT_KEY = "atomiumph_apo_weight"
+# What design_ph was GIVEN (--binder-alone forces 0.0), not what the caller typed.
+CHARGE_PRIOR_KEY = "atomiumph_charge_prior"
+# --binder-alone: no target in the graph; the collector NAs target-dependent columns.
+BINDER_ALONE_KEY = "atomiumph_binder_alone"
 
-# Flags this builder emits itself, mapped to the typed flag that owns them. design_ph.py
-# is argparse-based, so a later occurrence WINS: a --set token repeating one of these
-# would silently override a value the guardrails just validated, appear in no column,
-# and make n_expected a lie. Refused at submit time instead.
+# Flags emitted here, mapped to their typed flag; argparse takes the LAST occurrence.
 MANAGED_FLAGS = {
     "--binder_chains": "--binder-chains",
     "--target_chains": "--target-chains",
@@ -141,6 +106,7 @@ MANAGED_FLAGS = {
 class AtomiumphArgs(CommonArgs):
     binder_chains: str
     target_chains: str
+    binder_alone: bool
     center_mode: str
     centers_per_type: int
     placement_region: str
@@ -180,11 +146,8 @@ def _chain_list(spec: str, flag: str) -> list[str]:
 def _check_chains(args: AtomiumphArgs) -> tuple[str, str]:
     """Binder/target chain lists as space-separated strings, validated up front.
 
-    Both are REQUIRED (upstream defaults ``--binder_chains A --target_chains ''``; we
-    refuse those because the premise is a complex, and because the binder is NOT
-    reliably chain A here -- rfd3 binder output in this workspace commonly carries the
-    target on A and the binder on B, so inheriting upstream's default would quietly
-    design the target and score the binder as context).
+    Both are required (upstream's binder default ``A`` is wrong for rfd3 complexes,
+    where the binder is usually B). ``--binder-alone`` requires an empty target list.
     """
     binder = _chain_list(args.binder_chains, "--binder-chains")
     target = _chain_list(args.target_chains, "--target-chains")
@@ -194,6 +157,16 @@ def _check_chains(args: AtomiumphArgs) -> tuple[str, str]:
             "'B' (rfd3 binder complexes in this workspace are usually target=A, "
             "binder=B -- check the structure, do not assume)"
         )
+    if args.binder_alone:
+        if target:
+            raise ValueError(
+                f"--binder-alone and --target-chains {args.target_chains!r} contradict "
+                f"each other: the mode exists to keep the target OUT of the graph, so "
+                f"that 'core' (a Cb-neighbour count over every chain present) is the "
+                f"binder's own core. Drop --target-chains, or drop --binder-alone and "
+                f"run the complex."
+            )
+        return " ".join(binder), ""
     if not target:
         raise ValueError(
             "--target-chains is required: design_ph scores the protonation centre in "
@@ -210,16 +183,28 @@ def _check_chains(args: AtomiumphArgs) -> tuple[str, str]:
     return " ".join(binder), " ".join(target)
 
 
-def _check_lam(lams: list[float], no_control: bool) -> list[str]:
-    """``--lam`` must be a non-empty sweep containing the 0.0 control; returns argv text.
+def _check_lam(
+    lams: list[float], no_control: bool, binder_alone: bool = False
+) -> list[str]:
+    """``--lam`` must be a non-empty sweep with the 0.0 control; returns argv strings.
 
-    Both checks run on the RENDERED strings, which is what design_ph.py actually
-    receives: ``_fmt_lam`` rounds to 6 decimals, so ``--lam 0.0 1e-7`` is two identical
-    sweep arms however different the floats look here.
+    Checks run on the rendered strings (``_fmt_lam`` rounds to 6 decimals), which is
+    what design_ph receives. ``--binder-alone`` accepts only ``0.0``: with no apo
+    graph every lambda arm would draw from the same distribution.
     """
     if not lams:
         raise ValueError("--lam: at least one lambda value is required")
     rendered = [_fmt_lam(x) for x in lams]
+    if binder_alone:
+        if rendered != ["0.0"]:
+            raise ValueError(
+                f"--binder-alone accepts only --lam 0.0, got {' '.join(rendered)}. "
+                f"lambda scales the apo-vs-complex selective term and there is no apo "
+                f"contrast without a target chain, so every arm would draw from the "
+                f"same distribution and the extra rows would differ only in their "
+                f"lambda column."
+            )
+        return rendered
     duplicates = sorted({x for x in rendered if rendered.count(x) > 1})
     if duplicates:
         raise ValueError(
@@ -240,11 +225,7 @@ def _check_lam(lams: list[float], no_control: bool) -> list[str]:
 
 
 def _check_choices(args: AtomiumphArgs) -> None:
-    """Re-validate every enumerated flag in the builder, not only in argparse.
-
-    argparse ``choices`` catches a CLI typo; this catches a programmatic caller and
-    makes the failure a submit-time ValueError naming the flag.
-    """
+    """Re-validate enumerated flags: argparse ``choices`` only guards the CLI."""
     for flag, value, allowed in (
         ("--model-noise", args.model_noise, CHECKPOINT_NOISES),
         ("--placement-region", args.placement_region, PLACEMENT_REGIONS),
@@ -265,9 +246,7 @@ def _check_choices(args: AtomiumphArgs) -> None:
             raise ValueError(
                 f"{flag}: {value!r} is not one of {', '.join(allowed)}{extra}"
             )
-    # Same treatment as --binder-chains/--target-chains: a REQUIRED choice, refused
-    # at submit rather than defaulted, because every value of it produces a complete
-    # and healthy-looking table -- of a different molecule's pH behaviour.
+    # Required, never defaulted: each value gives a healthy-looking, different molecule.
     if not args.center_mode:
         raise ValueError(
             "--center-mode is required: it decides which pH behaviour you are "
@@ -299,20 +278,24 @@ def _check_choices(args: AtomiumphArgs) -> None:
         )
     if args.neighbour_k < 1:
         raise ValueError(f"--neighbour-k: must be at least 1, got {args.neighbour_k}")
+    # --binder-alone x interface provably fails (empty mask, design_ph.py:571-579).
+    if args.binder_alone and args.placement_region == "interface":
+        raise ValueError(
+            "--binder-alone with --placement-region interface: there is no target to "
+            "be at the interface of. region_masks returns an all-False interface mask "
+            "without target chains and design_ph then raises \"Region 'interface' is "
+            "empty\" for every structure. Use --placement-region core (the reason this "
+            "mode exists), or surface/any."
+        )
 
 
-def _check_set(tokens: list[str]) -> None:
-    """``--set`` is for UNMODELLED flags only, and must survive a TSV round trip.
+def _check_set(tokens: list[str], binder_alone: bool = False) -> None:
+    """``--set`` is for unmodelled flags only and must survive a TSV round trip.
 
-    Two refusals, both at submit time:
-
-    * a token repeating a flag this builder emits. design_ph.py's argparse takes the
-      LAST occurrence, so ``--set '--checkpoint_model_noise n07'`` would override a
-      value the guardrails just validated, show up in no column, and make the
-      ``n_expected`` trust column a lie.
-    * a token carrying a tab or a newline. The sub-manifest is TSV and ``atomiumph.sh``
-      pulls the argv tail with ``cut -f5``: a tab truncates the tail at that point and a
-      newline forges an extra subgroup row.
+    Refused: a token repeating a flag this builder emits (argparse takes the last), one
+    with a tab/newline (the sub-manifest is TSV), and under ``--binder-alone`` a
+    ``--placement_metric``/``--coupling_metric`` of ``ddE`` (no apo graph, so upstream
+    silently falls back to dE_complex).
     """
     for token in tokens:
         for bad, what in (("\t", "a tab"), ("\n", "a newline"), ("\r", "a carriage return")):
@@ -322,9 +305,7 @@ def _check_set(tokens: list[str]) -> None:
                     f"task script cuts the argv tail out of it, so that character would "
                     f"silently truncate or forge a row."
                 )
-        # EVERY word, not just the first: a --set string is explicitly allowed to carry
-        # a flag and its value, so '--contact_cutoff 6.0 --binder_chains A' would
-        # otherwise sail past a first-word-only check and reassign the binder.
+        # Every word: a --set string may carry a flag and its value.
         for word in token.split():
             flag = word.split("=", 1)[0]
             if flag in MANAGED_FLAGS:
@@ -336,14 +317,105 @@ def _check_set(tokens: list[str]) -> None:
                     f"Use {owner} instead."
                 )
 
+    if not binder_alone:
+        return
+    # Value as well as flag: `--placement_metric dE_complex` is honest and allowed.
+    words: list[str] = []
+    for token in tokens:
+        words.extend(token.split())
+    for i, word in enumerate(words):
+        flag, _, inline = word.partition("=")
+        if flag not in ("--placement_metric", "--coupling_metric"):
+            continue
+        value = inline if inline else (words[i + 1] if i + 1 < len(words) else "")
+        if value == "ddE":
+            raise ValueError(
+                f"--set: {flag} ddE is impossible under --binder-alone. ddE needs the "
+                f"apo graph, which design_ph builds only when there are target chains, "
+                f"so the run would silently use dE_complex instead"
+                + (
+                    " -- and --coupling_metric reaches no column, so nothing in the "
+                    "table would record that it did."
+                    if flag == "--coupling_metric"
+                    else "."
+                )
+            )
+
+
+def _pdb_chain_counts(path: Path) -> dict[str, int]:
+    """``{chain_id: n_atoms}`` over the ATOM/HETATM records of a PDB file.
+
+    ``ensure_pdb`` has already converted anything else, so PDB suffices. Raises on a
+    missing or empty file: a guard that cannot read its input must not pass.
+    """
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"{path} does not exist, so --binder-alone cannot check that it holds the "
+            f"binder chain only"
+        )
+    counts: dict[str, int] = {}
+    with open(path, errors="replace") as handle:
+        for line in handle:
+            if line.startswith(("ATOM  ", "HETATM")) and len(line) > 21:
+                chain = line[21].strip() or "_"
+                counts[chain] = counts.get(chain, 0) + 1
+    if not counts:
+        raise ValueError(
+            f"{path} holds no ATOM/HETATM records; --binder-alone cannot verify that "
+            f"it is the binder chain alone"
+        )
+    return counts
+
+
+def _check_binder_alone_input(name: str, path: Path, binder_chains: str) -> None:
+    """Under ``--binder-alone``, refuse a staged structure holding any other chain.
+
+    ``core`` counts Cb neighbours over every position in the graph (design_ph.py:582),
+    so an extra chain, or the padding it may leave, inflates burial invisibly.
+    """
+    wanted = set(binder_chains.split())
+    counts = _pdb_chain_counts(path)
+    extra = sorted(c for c in counts if c not in wanted)
+    missing = sorted(c for c in wanted if c not in counts)
+    if extra:
+        detail = ", ".join(f"{c} ({counts[c]} atoms)" for c in extra)
+        raise ValueError(
+            f"--binder-alone: {name} ({path}) contains chain(s) {detail} that are not "
+            f"in --binder-chains '{binder_chains}'. This mode needs a structure holding "
+            f"the binder chain ALONE: design_ph's 'core' is a Cb-neighbour count over "
+            f"every position in the graph (region_masks), so anything else in the file "
+            f"inflates the burial it measures, invisibly. Cut the binder out first "
+            f"(chainsel) and point -i at that column."
+        )
+    if missing:
+        raise ValueError(
+            f"--binder-alone: {name} ({path}) has no atoms in chain(s) "
+            f"{', '.join(missing)}, which --binder-chains names; the file holds "
+            f"{', '.join(sorted(counts))}. Check --binder-chains against the structure."
+        )
+
+
+def _apo_weight_value(args: AtomiumphArgs) -> str:
+    """``--apo_weight`` as design_ph receives it: 0.0 under ``--binder-alone``.
+
+    One function for the argv tail and the recorded column, so they cannot drift.
+    """
+    return "0.0" if args.binder_alone else str(args.apo_weight)
+
+
+def _charge_prior_value(args: AtomiumphArgs) -> str:
+    """``--charge_prior`` as design_ph receives it: 0.0 under ``--binder-alone``.
+
+    The prior sums TARGET charges, so with no target it is sent as zero.
+    """
+    return "0.0" if args.binder_alone else str(args.charge_prior)
+
 
 def _design_ph_extra(args: AtomiumphArgs) -> str:
-    """The run-wide ``design_ph.py`` argv tail, shared by every subgroup.
+    """The run-wide ``design_ph.py`` argv tail, whitespace-free (expanded unquoted).
 
-    WHITESPACE-FREE BY CONSTRUCTION: the task script expands this unquoted so each
-    token becomes its own argv entry. ``--binder_chains``/``--target_chains`` (single
-    space-separated strings) and ``--lam`` (several values) are NOT here -- each
-    travels as its own manifest field, see ``atomiumph.sh``.
+    Chains and ``--lam`` travel as their own manifest fields. Under ``--binder-alone``
+    both target-dependent weights are sent as 0.0 instead of trusting upstream's guards.
     """
     parts = [
         "--center_mode", args.center_mode,
@@ -362,8 +434,8 @@ def _design_ph_extra(args: AtomiumphArgs) -> str:
         "--coupling_probe", args.coupling_probe,
         "--ban_cys", str(args.ban_cys),
         "--protect_titratable", str(args.protect_titratable),
-        "--apo_weight", str(args.apo_weight),
-        "--charge_prior", str(args.charge_prior),
+        "--apo_weight", _apo_weight_value(args),
+        "--charge_prior", _charge_prior_value(args),
         "--charge_cutoff", str(args.charge_cutoff),
         "--interface_cutoff", str(args.interface_cutoff),
         "--burial_cutoff", str(args.burial_cutoff),
@@ -373,10 +445,7 @@ def _design_ph_extra(args: AtomiumphArgs) -> str:
     return " ".join(parts)
 
 
-# A design ready to run, and the signature deciding which designs share one batched
-# design_ph.py call. Every design_ph parameter is currently run-wide, so the signature
-# is constant across a run; it is kept so a future per-design flag (a residue mask, a
-# per-row centre list) cannot silently batch incompatible designs together.
+# The signature is constant per run; kept so a per-design flag cannot mis-batch.
 Member = tuple[str, Path]  # (design_name, staged_pdb_source)
 Signature = tuple[str, str]  # (binder_chains, target_chains)
 Subgroup = tuple[Signature, list[Member]]
@@ -399,53 +468,80 @@ def _pack_subgroups(chunks: list[Subgroup], max_per_task: int) -> list[list[Subg
     return tasks
 
 
-# Suffixes design_ph.py writes per stem. Mirrors the collector's SUFFIXES; kept here so
-# the submit-time stale check can name exactly the stems that would be collected.
+# Suffixes design_ph.py writes per stem; mirrors the collector's SUFFIXES.
 _OUTPUT_SUFFIXES = (".metrics.csv", ".couplings.csv", ".centers.json", ".ext.fa", ".fa")
-# Dirs the RUN owns, which never hold design_ph output. Mirrors the collector's
-# SKIP_DIRS so the two agree on what counts as a result.
+# Dirs the run owns (no design_ph output); mirrors the collector's SKIP_DIRS.
 _SKIP_DIRS = ("atomiumph_logs", "atomiumph_tasks", "inputs")
 
 
-def _check_no_stale_outputs(out_dir: Path, wanted: set[str]) -> None:
-    """Refuse to submit into a leaf holding results this submit will not regenerate.
+def _output_stems(out_dir: Path) -> set[str]:
+    """Every design_ph output stem already in the leaf (one recursive walk).
 
-    THE PROBLEM: ``grp_<gid>`` numbering restarts at 0 on every submit, nothing prunes
-    ``grp_<g>/out``, and ``.meta.json`` is rewritten each submit. So re-running the same
-    ``-l/--dir-label`` with a different ``--model-noise``, ``--center-mode``, chain
-    assignment, ``--apo-weight`` or ``--protect-titratable`` leaves the PREVIOUS run's
-    outputs in place, and collect would stamp them with the NEW run's parameters -- a
-    whole parent's numbers attributed to settings that never produced them.
-
-    SCANNED LEAF-WIDE AND ONCE, before any subgroup dir is touched. A per-subgroup check
-    is not enough and was the original bug: a rerun with a SMALLER ready set -- the
-    normal case after a partial failure or a ``-f`` filter -- recreates only ``grp_0``
-    and never looks at ``grp_1/out``, whose stems the collector would then mint as OK
-    rows under the new run's parameters. ``wanted`` is therefore every member of the
-    WHOLE submit, and the scan is a recursive glob over the same suffixes the collector
-    indexes.
-
-    FAIL CLOSED AND NON-DESTRUCTIVE: refuses, names the stems, deletes nothing. A stem
-    this submit WILL regenerate is fine (its files are overwritten); only a stem that
-    would survive untouched is refused.
+    Shared by both submit-time guards; the run's own dirs are skipped.
     """
+    stems: set[str] = set()
     if not out_dir.is_dir():
-        return
-    stale: set[str] = set()
+        return stems
     for path in out_dir.rglob("*"):
         if not path.is_file():
             continue
-        # Never look inside the dirs the RUN owns: the staged symlinks are named
-        # <stem>.pdb (not an output suffix) but the sub-manifests and logs live here
-        # too, and a future log name must not be mistaken for a design.
         if any(part in _SKIP_DIRS for part in path.relative_to(out_dir).parts[:-1]):
             continue
         for suffix in _OUTPUT_SUFFIXES:
             if path.name.endswith(suffix) and len(path.name) > len(suffix):
-                stem = path.name[: -len(suffix)]
-                if stem not in wanted:
-                    stale.add(stem)
+                stems.add(path.name[: -len(suffix)])
                 break
+    return stems
+
+
+def _read_meta(out_dir: Path) -> dict:
+    """The leaf's sidecar as a dict, or ``{}`` if absent, unreadable or not an object.
+
+    Read before this submit's ``ctx.write_meta``, so it holds the previous run's values.
+    """
+    path = out_dir / ".meta.json"
+    if not path.is_file():
+        return {}
+    try:
+        meta = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return meta if isinstance(meta, dict) else {}
+
+
+def _check_binder_alone_unchanged(
+    out_dir: Path, existing: set[str], binder_alone: bool
+) -> None:
+    """Refuse to flip ``--binder-alone`` in a leaf that already holds output.
+
+    Collect stamps the whole leaf from one sidecar, so mixed modes would mislabel every
+    row of the other. A missing key means False; an empty leaf has nothing to mislabel.
+    """
+    if not existing:
+        return
+    previous = bool(_read_meta(out_dir).get(BINDER_ALONE_KEY, False))
+    if previous == bool(binder_alone):
+        return
+    raise ValueError(
+        f"{out_dir} already holds design_ph output from a run with "
+        f"atomiumph_binder_alone={previous}, and this submit has "
+        f"{bool(binder_alone)}. The two are different questions -- one has the target "
+        f"in the graph, the other does not -- and collect stamps the whole leaf from "
+        f"ONE sidecar, so the rows of one mode would be published with the other's "
+        f"flag and its NA pattern. --binder-alone always gets its OWN --table-label "
+        f"(and its own leaf); the two modes must never share one."
+    )
+
+
+def _check_no_stale_outputs(out_dir: Path, existing: set[str], wanted: set[str]) -> None:
+    """Refuse to submit into a leaf holding results this submit will not regenerate.
+
+    ``grp_<g>`` numbering restarts at 0 and nothing prunes old output, so collect would
+    stamp older results with this run's parameters. Scanned leaf-wide, since a smaller
+    rerun never revisits ``grp_1/out``. Fail-closed and non-destructive: it names the
+    stems and deletes nothing.
+    """
+    stale = existing - wanted
     if stale:
         shown = ", ".join(sorted(stale)[:10]) + (" …" if len(stale) > 10 else "")
         raise ValueError(
@@ -462,13 +558,10 @@ def _check_no_stale_outputs(out_dir: Path, wanted: set[str]) -> None:
 
 
 def _stage_inputs(inputs_dir: Path, members: list[Member]) -> None:
-    """Make ``inputs_dir`` hold EXACTLY this subgroup's designs, as symlinks.
+    """Make ``inputs_dir`` hold exactly this subgroup's designs, as symlinks.
 
-    The pruning matters because ``grp_<gid>`` numbering restarts at 0 on every submit:
-    re-running the same label with a different ready set would otherwise leave the
-    previous occupants of ``grp_0/inputs`` in place, and ``--pdb_dir`` globs the whole
-    directory -- so stale designs would be re-run under the NEW parameters and their
-    outputs would overwrite the earlier ones under the same stem.
+    ``grp_<gid>`` restarts at 0 each submit and ``--pdb_dir`` globs the whole directory,
+    so leftover links would re-run stale designs under the new parameters.
     """
     wanted = {name for name, _ in members}
     for stale in inputs_dir.glob("*.pdb"):
@@ -479,16 +572,10 @@ def _stage_inputs(inputs_dir: Path, members: list[Member]) -> None:
 
 
 def _symlink_member(pdb_src: Path, inputs_dir: Path, name: str) -> None:
-    """Symlink a staged design into ``inputs_dir`` as ``<name>.pdb`` (no copy).
-
-    The stem is what collect keys lineage off: design_ph.py names every output after
-    the input file stem, so ``<name>.pdb`` -> ``<name>.metrics.csv`` -> parent row.
-    """
+    """Symlink a staged design as ``<name>.pdb`` (design_ph names outputs by stem)."""
     link = inputs_dir / f"{name}.pdb"
     if link.is_symlink():
-        # A --force rerun after changing -i leaves a link pointing at the PREVIOUS
-        # structure. Reusing it would re-design the old file under the new column's
-        # name, with nothing in the table to show it.
+        # A stale link from a rerun with a changed -i would re-design the old file.
         if link.readlink() == pdb_src:
             return
         link.unlink()
@@ -503,35 +590,24 @@ def _symlink_member(pdb_src: Path, inputs_dir: Path, name: str) -> None:
 def build_atomiumph_manifest(ctx: ManifestCtx[AtomiumphArgs]) -> list[tuple[str, ...]]:
     # Guardrails first: all cheap, all before a single container starts.
     binder_chains, target_chains = _check_chains(ctx.args)
-    lam_values = _check_lam(list(ctx.args.lam), ctx.args.no_control)
+    lam_values = _check_lam(
+        list(ctx.args.lam), ctx.args.no_control, ctx.args.binder_alone
+    )
     _check_choices(ctx.args)
-    _check_set(list(ctx.args.set))
+    _check_set(list(ctx.args.set), ctx.args.binder_alone)
 
     extra = _design_ph_extra(ctx.args)
     lam_field = " ".join(lam_values)
-
-    # Recorded for the collector's trust columns. `n_expected` because --num-seq is PER
-    # LAMBDA, so the row count per structure is a product; the chains because they are
-    # run-wide and would otherwise exist nowhere a reader of the table can see.
-    ctx.write_meta(
-        **{
-            EXPECTED_KEY: len(lam_values) * ctx.args.num_seq,
-            BINDER_CHAINS_KEY: binder_chains,
-            TARGET_CHAINS_KEY: target_chains,
-            CENTER_MODE_KEY: ctx.args.center_mode,
-            OUTPUT_SCOPE_KEY: ctx.args.output_scope,
-            MODEL_NOISE_KEY: ctx.args.model_noise,
-            LAM_SWEEP_KEY: lam_field,
-            PROTECT_TITRATABLE_KEY: str(ctx.args.protect_titratable),
-            APO_WEIGHT_KEY: str(ctx.args.apo_weight),
-        }
-    )
 
     ready = ctx.ready
     groups: dict[Signature, list[Member]] = defaultdict(list)
     for design_name in sorted(cast(str, n) for n in ready.index):
         input_path = Path(str(ready.at[design_name, ctx.args.input_column]))
-        pdb_src = volume_path(ensure_pdb(input_path, ctx.args.run_dir))
+        # Local path first: volume_path gives the container's /runs form.
+        local_pdb = ensure_pdb(input_path, ctx.args.run_dir)
+        if ctx.args.binder_alone:
+            _check_binder_alone_input(design_name, local_pdb, binder_chains)
+        pdb_src = volume_path(local_pdb)
         groups[(binder_chains, target_chains)].append((design_name, pdb_src))
 
     x = ctx.args.designs_per_task
@@ -541,10 +617,13 @@ def build_atomiumph_manifest(ctx: ManifestCtx[AtomiumphArgs]) -> list[tuple[str,
             chunks.append((sig, members[i : i + x]))
     tasks = _pack_subgroups(chunks, x)
 
-    # ONCE, leaf-wide, before any grp_<g> dir is created or any symlink moved: the
-    # stems of the WHOLE submit against every output already in the leaf.
+    # Once, leaf-wide, before any grp_<g> dir is created or symlink moved.
+    existing_stems = _output_stems(ctx.out_dir)
+    _check_binder_alone_unchanged(ctx.out_dir, existing_stems, ctx.args.binder_alone)
     _check_no_stale_outputs(
-        ctx.out_dir, {name for members in groups.values() for name, _ in members}
+        ctx.out_dir,
+        existing_stems,
+        {name for members in groups.values() for name, _ in members},
     )
 
     tasks_dir = ctx.out_dir / "atomiumph_tasks"
@@ -564,6 +643,23 @@ def build_atomiumph_manifest(ctx: ManifestCtx[AtomiumphArgs]) -> list[tuple[str,
         with open(task_file, "w") as f:
             f.writelines("\t".join(row) + "\n" for row in sub_rows)
         manifest_rows.append((str(task_file),))
+
+    # LAST: a refused or aborted submit must not rewrite the recorded run parameters.
+    ctx.write_meta(
+        **{
+            EXPECTED_KEY: len(lam_values) * ctx.args.num_seq,
+            BINDER_CHAINS_KEY: binder_chains,
+            TARGET_CHAINS_KEY: target_chains,
+            CENTER_MODE_KEY: ctx.args.center_mode,
+            OUTPUT_SCOPE_KEY: ctx.args.output_scope,
+            MODEL_NOISE_KEY: ctx.args.model_noise,
+            LAM_SWEEP_KEY: lam_field,
+            PROTECT_TITRATABLE_KEY: str(ctx.args.protect_titratable),
+            APO_WEIGHT_KEY: _apo_weight_value(ctx.args),
+            CHARGE_PRIOR_KEY: _charge_prior_value(ctx.args),
+            BINDER_ALONE_KEY: bool(ctx.args.binder_alone),
+        }
+    )
 
     return manifest_rows
 
@@ -589,9 +685,30 @@ def add_run_atomiumph_args(parser: ArgumentParser) -> None:
         "--target-chains",
         type=str,
         default="",
-        help="REQUIRED. Chain(s) of the target, same mini-language. These are the "
-        "chains DELETED to build the apo reference, so ddE is defined only when they "
-        "are given and disjoint from --binder-chains.",
+        help="REQUIRED unless --binder-alone. Chain(s) of the target, same "
+        "mini-language. These are the chains DELETED to build the apo reference, so "
+        "ddE is defined only when they are given and disjoint from --binder-chains.",
+    )
+    parser.add_argument(
+        "--binder-alone",
+        action="store_true",
+        help="Run design_ph.py on the BINDER ONLY: no target chain in the graph. This "
+        "is a DIFFERENT QUESTION, not a cheaper version of the normal run. It exists "
+        "for --placement-region core: design_ph defines core as a Cb-neighbour count "
+        "within 10 A over EVERY chain present (region_masks), so with a target in the "
+        "file the centre can be buried under the TARGET and be fully exposed in the "
+        "free binder. With the target absent, core is the binder's own core. "
+        "CONSEQUENCES, all structural: ddE is undefined (no apo contrast -- design_ph "
+        "writes nan and the collector reports NA, never 0); every target-dependent "
+        "column is NA and each row carries atomiumph_binder_alone True; "
+        "--apo-weight and --charge-prior are FORCED TO 0.0 and recorded as 0.0. "
+        "REFUSED in this mode: a non-empty --target-chains, any --lam but 0.0, "
+        "--placement-region interface (the mask is all False without a target), "
+        "--set '--placement_metric ddE' / '--coupling_metric ddE', a staged structure "
+        "holding any chain other than --binder-chains (checked per file at submit -- "
+        "cut the binder out with chainsel and point -i at that column), and flipping "
+        "this flag in a leaf that already holds output. GIVE IT ITS OWN "
+        "--table-label: the two modes must never share a leaf.",
     )
     parser.add_argument(
         "--center-mode",
@@ -741,7 +858,7 @@ def add_run_atomiumph_args(parser: ArgumentParser) -> None:
         "because omitting it would NOT reproduce upstream. Above 0 the apo graph "
         "enters SAMPLING and not only scoring, which is what pushes a design toward "
         "selectivity rather than toward being merely good in the complex; it also "
-        "roughly doubles the infill forward passes. Recorded as atomiumph_apo_weight.",
+        "roughly doubles the infill forward passes. Recorded as atomiumph_apo_weight. UNDER --binder-alone THIS FLAG IS FORCED TO 0.0 -- there is no apo graph, and whether every consumer of apo_weight guards on it was not read, so the value is zeroed rather than trusted to be ignored; the recorded column says 0.0.",
     )
     parser.add_argument(
         "--protect-titratable",
@@ -761,7 +878,9 @@ def add_run_atomiumph_args(parser: ArgumentParser) -> None:
         default=0.5,
         help="Weight of the charge-complementarity prior on centre placement "
         "(default 0.5; 0 disables). Its SIGN follows --center-mode: his_p/acid_p seek "
-        "a negative target environment, his_s a positive one.",
+        "a negative target environment, his_s a positive one. UNDER --binder-alone IT "
+        "IS FORCED TO 0.0: the field sums TARGET charges only, so there is nothing for "
+        "it to weigh. Recorded as atomiumph_charge_prior.",
     )
     parser.add_argument("--charge-cutoff", type=float, default=8.0,
                         help="Radius for the charge field, A (default 8.0).")

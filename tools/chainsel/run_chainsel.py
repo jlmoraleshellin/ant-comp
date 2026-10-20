@@ -28,6 +28,19 @@ A and C", so ``bsa_t1``/``bsa_t2``/``bridge_ratio`` are not computable at all on
 such a file. ``--merge-groups 'A+C:A,B+D:B'`` writes the same coordinates back as
 two chains, and ringfit works again.
 
+The third reason is the inverse: the FUSED subunit. RFdiffusion's symmetric mode
+writes one chain per subunit that holds the diffused binder AND the fixed target,
+with residue numbers that repeat inside the chain (binder 1..60, then target
+1..152). ``epitope``, ``atomium`` and ``usalign`` need binder and target as separate
+chains with unique numbering. ``--split-groups 'A:1-60>D+61-212>A,...'`` cuts each
+source chain by 1-based POSITION (numbers cannot address a residue when they
+repeat), checks that the segments tile the chain exactly (a checksum: any mismatch
+is an error for that design, never a trimmed cut), writes the output chains in
+ascending ID order and ALWAYS renumbers each 1..N. It also collects, per output
+chain, the residue count and mean B-factor (``chain_n_res``/``chain_mean_b``) -- the
+trust columns that say which segment is binder (RFdiffusion: B 0) and which target
+(B 1). Those two columns are NA in every other mode.
+
 Merging is ONLY ever done when asked for explicitly. ``--rename-to`` still REFUSES
 to map two kept chains onto one ID, because there it would be an accident; a merge
 group says so in the flag itself.
@@ -78,6 +91,12 @@ Usage:
         --merge-groups 'A+C:A,B+D:B,E:E' \
         --renumber-from 'A:19-59,C:107-155,B:19-59,D:107-155' \
         --dir-label protomers
+
+    sapia run chainsel outputs/<run_dir> \
+        --table table0 \
+        --input-column rfdiffusion_path \
+        --split-groups 'A:1-60>D+61-212>A,B:1-60>E+61-212>B,C:1-60>F+61-212>C' \
+        --dir-label split
 """
 
 from argparse import ArgumentParser
@@ -86,6 +105,7 @@ from typing import cast
 
 from prosapia.core import CommonArgs, ManifestCtx
 from prosapia.core.executors import volume_path
+from prosapia.utils import resolve_template
 
 OUT_FORMATS = ("pdb", "cif")
 # The sentinel default_input_column (see the module docstring): matches no column,
@@ -96,6 +116,10 @@ NO_DEFAULT_COLUMN = "not applicable"
 # One output chain: the source chain IDs that feed it, in write order, and the ID
 # it is written under. A plain --chains selection is groups of one.
 Group = tuple[list[str], str]
+# One split source chain: its ID and its segments (first, last, out_id) in 1-based
+# inclusive POSITIONS of the chain's residue order.
+Segment = tuple[int, int, str]
+Split = tuple[str, list[Segment]]
 
 
 class ChainselArgs(CommonArgs):
@@ -106,6 +130,7 @@ class ChainselArgs(CommonArgs):
     keep_het: bool
     renumber: bool
     renumber_from: str
+    split_groups: str
 
 
 def add_run_chainsel_args(parser: ArgumentParser) -> None:
@@ -197,6 +222,33 @@ def add_run_chainsel_args(parser: ArgumentParser) -> None:
         "internally gapless -- it writes <first>, <first>+1, ... and does not "
         "reproduce numbering gaps inside a segment.",
     )
+    parser.add_argument(
+        "--split-groups",
+        type=str,
+        default="",
+        help="CUT source chains into several output chains, the inverse of "
+        "--merge-groups: '<chain>:<first>-<last>><out_id>[+<first>-<last>><out_id>"
+        "...]', source chains comma-joined, e.g. "
+        "'A:1-60>D+61-212>A,B:1-60>E+61-212>B,C:1-60>F+61-212>C'. <first>/<last> "
+        "are 1-based POSITIONS in the chain's residue order in the file (counted "
+        "over the residues chainsel keeps: polymer only unless --keep-het; "
+        "alternative residues at one site count as two), NOT "
+        "residue numbers -- RFdiffusion's symmetric mode numbers binder and target "
+        "from 1 inside one chain, so numbers repeat and cannot address anything. "
+        "CHECKSUM: each source chain's segments must tile it exactly -- from "
+        "position 1, in order, no gap, no overlap (refused at submit time) and "
+        "ending at the chain's real residue count (else that design is an error, "
+        "no file written). A source chain not named is DROPPED; a named one that is "
+        "absent is an error. Output chain IDs must be unique. Output chains are "
+        "written in ascending ID order (A,B,C,D,E,F) whatever the listing order. "
+        "NUMBERING: split mode ALWAYS renumbers each output chain 1..N (insertion "
+        "codes dropped), because the source numbering repeats; --renumber is "
+        "accepted as a redundant no-op, --renumber-from is an error. Replaces "
+        "--chains/--rename-to/--merge-groups (any combination is an error). Accepts "
+        "{expr} placeholders resolved per design, e.g. 'A:1-{binder_len}>D+...'. "
+        "Collects chain_n_res and chain_mean_b per output chain -- read them to "
+        "confirm which segment is binder and which target.",
+    )
 
 
 def _split(value: str) -> list[str]:
@@ -264,7 +316,9 @@ def resolve_groups(args: ChainselArgs) -> list[Group]:
         raise ValueError(
             "chainsel needs a chain selection: pass --chains (one output chain per "
             "ID, e.g. --chains E) or --merge-groups (several source chains joined "
-            "into one output chain, e.g. --merge-groups 'A+C:A,B+D:B')."
+            "into one output chain, e.g. --merge-groups 'A+C:A,B+D:B') or "
+            "--split-groups (one source chain cut by position into several, e.g. "
+            "--split-groups 'A:1-60>D+61-212>A')."
         )
 
     if merge:
@@ -366,8 +420,216 @@ def _groups_spec(groups: list[Group]) -> str:
     return ",".join(f"{'+'.join(sources)}:{out_id}" for sources, out_id in groups)
 
 
+def _parse_split_groups(value: str) -> list[Split]:
+    """'A:1-60>D+61-212>A,B:1-60>E' -> [('A', [(1, 60, 'D'), (61, 212, 'A')]), ...].
+
+    The submit-side copy of chainsel_worker.parse_split_groups (the worker must run
+    without prosapia, so the two cannot share a module); tests/test_chainsel.py
+    checks that they accept and reject the same specs. Checks everything that does
+    not need the structure: the grammar, a source chain named twice, a duplicated
+    output ID, and the tiling (from position 1, in order, no gap, no overlap).
+    Whether a chain really has <last> residues is checked per design by the worker.
+    """
+    splits: list[Split] = []
+    seen_chains: set[str] = set()
+    out_ids: list[str] = []
+    entries = _split(value)
+    if not entries:
+        raise ValueError(
+            "--split-groups is empty: give at least one source chain, e.g. "
+            "'A:1-60>D+61-212>A'."
+        )
+    for entry in entries:
+        if entry.count(":") != 1:
+            raise ValueError(
+                f"--split-groups entry {entry!r} is malformed: write "
+                f"'<chain>:<first>-<last>><out_id>[+<first>-<last>><out_id>...]', "
+                f"e.g. 'A:1-60>D+61-212>A', with source chains comma-joined."
+            )
+        chain, segs_str = (tok.strip() for tok in entry.split(":"))
+        if not chain:
+            raise ValueError(f"--split-groups entry {entry!r} names no source chain.")
+        if chain in seen_chains:
+            raise ValueError(
+                f"--split-groups names source chain {chain} twice: give all of its "
+                f"segments in one entry, joined with '+'."
+            )
+        seen_chains.add(chain)
+        segments: list[Segment] = []
+        for tok in segs_str.split("+"):
+            tok = tok.strip()
+            if tok.count(">") != 1:
+                raise ValueError(
+                    f"--split-groups segment {tok!r} of {entry!r} is malformed: "
+                    f"write '<first>-<last>><out_id>', e.g. '1-60>D'."
+                )
+            rng, out_id = (part.strip() for part in tok.split(">"))
+            if not out_id:
+                raise ValueError(
+                    f"--split-groups segment {tok!r} of {entry!r} names no output "
+                    f"chain ID after '>'."
+                )
+            first_str, sep, last_str = rng.partition("-")
+            if not sep:
+                raise ValueError(
+                    f"--split-groups segment {tok!r} of {entry!r} needs a position "
+                    f"range '<first>-<last>' before '>'."
+                )
+            try:
+                first, last = int(first_str), int(last_str)
+            except ValueError:
+                raise ValueError(
+                    f"--split-groups segment {tok!r} of {entry!r} has a non-integer "
+                    f"position (positions are 1-based integers; wrap a table column "
+                    f"in braces, e.g. '1-{{binder_len}}>D')."
+                ) from None
+            if first < 1:
+                raise ValueError(
+                    f"--split-groups segment {tok!r} of {entry!r}: positions are "
+                    f"1-based."
+                )
+            if last < first:
+                raise ValueError(
+                    f"--split-groups segment {tok!r} of {entry!r} ends ({last}) "
+                    f"before it starts ({first})."
+                )
+            segments.append((first, last, out_id))
+            out_ids.append(out_id)
+        expected = 1
+        for first, last, out_id in segments:
+            if first < expected:
+                raise ValueError(
+                    f"--split-groups chain {chain}: segment {first}-{last}>{out_id} "
+                    f"overlaps the previous one (next free position is {expected}). "
+                    f"Segments must tile the chain in order, each residue once."
+                )
+            if first > expected:
+                what = "the chain start" if expected == 1 else "the previous segment"
+                raise ValueError(
+                    f"--split-groups chain {chain}: gap -- segment "
+                    f"{first}-{last}>{out_id} starts at {first} but {what} leaves "
+                    f"position {expected} uncovered. Segments must tile the chain "
+                    f"from position 1, in order; to drop residues, there is no "
+                    f"split syntax -- that is deliberate."
+                )
+            expected = last + 1
+        splits.append((chain, segments))
+    dups = sorted({o for o in out_ids if out_ids.count(o) > 1})
+    if dups:
+        raise ValueError(
+            f"--split-groups writes output chain ID(s) {dups} more than once. Each "
+            f"segment is its own output chain and needs its own ID (split mode never "
+            f"merges; use --merge-groups for that)."
+        )
+    return splits
+
+
+def _split_guards(args: ChainselArgs) -> None:
+    """--split-groups replaces every other selection/numbering flag except
+    --renumber, which it makes redundant (split mode always renumbers)."""
+    clashing = [
+        flag
+        for flag, value in (
+            ("--chains", args.chains),
+            ("--rename-to", args.rename_to),
+            ("--merge-groups", args.merge_groups),
+            ("--renumber-from", args.renumber_from),
+        )
+        if value.strip()
+    ]
+    if clashing:
+        raise ValueError(
+            f"--split-groups cannot be combined with {', '.join(clashing)}: it says "
+            f"which chains to keep (before ':'), how to cut them and what to call "
+            f"each piece (after '>'), and it always renumbers each output chain "
+            f"1..N because the source numbering repeats. Drop "
+            f"{', '.join(clashing)}."
+        )
+
+
+def _canonical_split(value: str, out_format: str) -> str:
+    """Parse and check one (already {expr}-resolved) split spec; return the
+    canonical text the worker is handed."""
+    splits = _parse_split_groups(value)
+    if out_format == "pdb":
+        too_long = [o for _, segs in splits for _, _, o in segs if len(o) != 1]
+        if too_long:
+            raise ValueError(
+                f"--out-format pdb needs one-character chain IDs, but the "
+                f"--split-groups output IDs {too_long} are longer. Shorten them "
+                f"(the part after '>'), or use --out-format cif."
+            )
+    return ",".join(
+        f"{chain}:" + "+".join(f"{a}-{b}>{o}" for a, b, o in segments)
+        for chain, segments in splits
+    )
+
+
+def _build_split_manifest(ctx: ManifestCtx[ChainselArgs]) -> list[tuple[str, ...]]:
+    """Split-mode rows: the canonical split spec in field 5, the group and
+    --renumber-from fields empty (the worker renumbers 1..N in split mode whatever
+    the numbering field says)."""
+    _split_guards(ctx.args)
+    raw = ctx.args.split_groups.strip()
+    # Without placeholders the spec is the same for every design: check it once,
+    # here, before the input column, so a bad spec refuses the run even on an
+    # empty ready set.
+    static = None if "{" in raw else _canonical_split(raw, ctx.args.out_format)
+    column = _check_input_column(ctx)
+
+    manifest_rows: list[tuple[str, ...]] = []
+    for name in ctx.ready.index:
+        name = cast(str, name)
+        src = Path(str(ctx.ready.at[name, column]))
+        if not src.exists():
+            print(f"{name}: MISSING {src} (skipping)")
+            continue
+        if static is not None:
+            spec = static
+        else:
+            try:
+                spec = _canonical_split(
+                    resolve_template(raw, ctx.lookup, name), ctx.args.out_format
+                )
+            except ValueError as e:
+                raise ValueError(f"design {name!r}: {e}") from None
+        manifest_rows.append(
+            (
+                name,
+                str(volume_path(src)),
+                "",  # no group spec in split mode
+                "",  # no --renumber-from in split mode
+                spec,
+                ctx.args.out_format,
+                "keep" if ctx.args.keep_het else "strip",
+                "renumber" if ctx.args.renumber else "preserve",
+            )
+        )
+    return manifest_rows
+
+
+def _check_input_column(ctx: ManifestCtx[ChainselArgs]) -> str:
+    # No honest default input column (see module docstring): refuse loudly rather
+    # than submit rows whose input cell does not exist.
+    column = ctx.args.input_column
+    if column == NO_DEFAULT_COLUMN or column not in ctx.df.columns:
+        available = ", ".join(
+            str(c) for c in ctx.df.columns if str(c).endswith("_path")
+        )
+        raise ValueError(
+            f"chainsel has no default input column: pass -i/--input-column with the "
+            f"structure column to extract from (got {column!r}, which table "
+            f"'{ctx.args.table}' does not have). Structure columns available: "
+            f"{available or '(none)'}."
+        )
+    return column
+
+
 def build_chainsel_manifest(ctx: ManifestCtx[ChainselArgs]) -> list[tuple[str, ...]]:
     ctx.args.gpus_per_task = 0  # CPU-only tool
+
+    if ctx.args.split_groups.strip():
+        return _build_split_manifest(ctx)
 
     groups = resolve_groups(ctx.args)
     kept = [chain for sources, _ in groups for chain in sources]
@@ -397,19 +659,7 @@ def build_chainsel_manifest(ctx: ManifestCtx[ChainselArgs]) -> list[tuple[str, .
         _starts_spec(_parse_renumber_from(renumber_from, kept)) if renumber_from else ""
     )
 
-    # No honest default input column (see module docstring): refuse loudly rather
-    # than submit rows whose input cell does not exist.
-    column = ctx.args.input_column
-    if column == NO_DEFAULT_COLUMN or column not in ctx.df.columns:
-        available = ", ".join(
-            str(c) for c in ctx.df.columns if str(c).endswith("_path")
-        )
-        raise ValueError(
-            f"chainsel has no default input column: pass -i/--input-column with the "
-            f"structure column to extract from (got {column!r}, which table "
-            f"'{ctx.args.table}' does not have). Structure columns available: "
-            f"{available or '(none)'}."
-        )
+    column = _check_input_column(ctx)
 
     ready = ctx.ready
 
@@ -432,6 +682,9 @@ def build_chainsel_manifest(ctx: ManifestCtx[ChainselArgs]) -> list[tuple[str, .
                 groups_spec,
                 # May be empty, so never last.
                 starts_spec,
+                # The --split-groups spec: always empty here (split mode builds
+                # its rows in _build_split_manifest).
+                "",
                 # Kept last: always non-empty, so the manifest line never ends on
                 # an empty field.
                 ctx.args.out_format,
