@@ -358,21 +358,23 @@ sapia run proteinmpnn <run_dir> -t table1 -i hbdesigner_path \
 
 ## The hand-off to hisbond and propka (a designed-His network)
 
-When the network put a histidine on the binder, `hbdesigner_centers` is already
-in the format `hisbond` wants, so no intermediate step is needed:
+**THIS HAND-OFF IS CURRENTLY BROKEN AND NEEDS A HUMAN DECISION.** `hisbond` no
+longer takes a centres COLUMN: its `--centers` wants comma-separated 1-based
+binder positions, supplied per design through `{expr}` islands, and one island
+resolves to one integer. `hbdesigner_centers` is a packed `'11:HIS;19:HIS'`
+string (0-BASED), which cannot ride through an island, and hbdesigner publishes
+no numeric `centre<k>_idx1` columns of its own. Until it does, either add them to
+hbdesigner (the way `atomiumph` has them) or read the positions off
+`hbdesigner_centers` by hand and pass literals. Remember the +1: hbdesigner's
+indices are 0-based, `--centers` is 1-based.
 
 ```bash
-# only rows that actually carry a centre -- hisbond RAISES on an empty cell
-#   <run_dir>/filters/has_centers.py :
-#   def apply_filter(df):
-#       return df[(df["hbdesigner_status"] == "OK")
-#                 & (df["hbdesigner_centers"].notna())]
+# once hbdesigner publishes numeric positions, the call reads:
 sapia run hisbond <run_dir> -t <child table> -i <predicted structure column> \
-    --centers-col hbdesigner_centers \
+    --centers '{<a 1-based position column>},{<another>}' \
     --binder-chain D \
     --target-chains A,B,C \
-    --expect-binder-len-col hbdesigner_fold_sequence \
-    -f <run_dir>/filters/has_centers.py
+    --expect-binder-len-col hbdesigner_fold_sequence
 ```
 
 - **`--target-chains` is required and has no default** — for the triD complexes

@@ -65,9 +65,12 @@ atom taken out of the file the row points at).
                           hbdesigner designs the residue, not its protonation
                           state, so HIS-S / HIS-P would assert something it has
                           not measured. NA -- NEVER '' -- when the network put no
-                          histidine on the binder, because hisbond RAISES on an
-                          empty centres cell; filter with .notna(), not != ''.
-                          Feeds `hisbond --centers-col hbdesigner_centers`.
+                          histidine on the binder; filter with .notna(), not
+                          != ''. NO TOOL CONSUMES THIS CELL: hisbond's --centers
+                          now takes 1-BASED positions as plain integers through
+                          {expr} islands, and a packed string cannot ride through
+                          one. Until hbdesigner publishes numeric position
+                          columns, read the positions off here by hand and ADD 1.
     n_centers             how many such histidines. 0 IS A MEASUREMENT (this
                           network designed none) and pairs with centers NA. Both
                           are NA together only when fold_sequence is NA, i.e.

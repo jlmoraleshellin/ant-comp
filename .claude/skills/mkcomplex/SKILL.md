@@ -53,7 +53,7 @@ sapia run mkcomplex <run_dir> -t <table> -i <fused-sequence column> --prepend-se
 **What N>1 does to the one-chain consumers.** Several downstream tools are built around ONE binder chain; with N identical copies they still answer about **a single protomer**, a different question from the oligomer's:
 
 - `boltzconf` and `af3conf` `--binder-chains` require exactly one chain; their binder pLDDT, `chain(s)_ptm`, interface PAE and ipSAE describe that copy only.
-- `propka --binder-chain` cuts one chain out as the "free" state: with N>1 the comparison is complex vs a single free protomer (a trimer-vs-monomer `dpka`), not the unbinding you probably mean.
+- `propka --binder-chains` cuts the named chains out together as the "free" state: name every protomer of a homo-oligomeric design (`A,B,C`) to compare the oligomer with itself alone; naming one gives a trimer-vs-monomer `dpka`, not the unbinding you probably mean.
 - `hisbond` uses one binder chain, so a histidine pointing at a **sister copy** is invisible unless you pass the sister chains (E, F in `T/T/T/F/F/F`) as target chains, which makes the sister interface the thing measured.
 - `cms` and `ifacegeom` take chain lists and can cover all N copies, but only if you list them: a list naming one copy silently reports one copy.
 

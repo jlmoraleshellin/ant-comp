@@ -28,6 +28,25 @@ another's ``ddE_mean``. ``join_mode`` says how they were paired:
 keeps a single value (NA with several centres) and ``<name>_centres`` the verbatim
 string; ``ddE_centres`` and ``ddE_min`` derive from them (design_ph.py:1859-1877).
 
+THE CENTRES ARE PUBLISHED TWICE, for two different readers. ``centers`` is the packed
+AUDIT cell (``<index0>:<token>`` joined by ';', 0-BASED, token included): it is the
+only record of HIS-S vs HIS-P and NO TOOL PARSES IT. ``centre<k>_idx1`` are plain
+1-BASED integers in the SAME ORDER, the form a downstream flag consumes through the
+``{expr}`` island layer (one island is one integer), e.g.
+``--centers '{atomiumph_centre1_idx1},{atomiumph_centre2_idx1}'``. Both come from one
+pass over ``centers.json``, so they cannot disagree about which centre is centre<k>.
+
+``centre<k>_idx1`` IS A POSITION ALONG THE DESIGNED SEQUENCE OF THIS ROW
+(``atomiumph_sequence``). Under ``--output-scope all`` that sequence is every chain
+joined by '/', so an index into it is NOT a binder position; the columns are then NA
+with ``centres_idx1_basis = output_scope_all``, never a plausible wrong number. The
+same refusal when ``--binder-chains`` named MORE THAN ONE chain (the designed sequence
+is then their concatenation with NO '/', so the sequence check passes while an index
+into it is a position along no single chain), when the centre numbering key is not a
+0-based index, and when ``centers_seq_check`` did not confirm the residue at the index.
+``centres_idx1_basis`` names which. ``n_centres_idx1`` must equal ``n_centers``;
+anything smaller means some centre has no column.
+
 Under ``--binder-alone`` (sidecar ``atomiumph_binder_alone``) every row has
 ``binder_alone = True`` and the ``TARGET_DEPENDENT_NUMERIC`` columns are NA. That is an
 allowlist of names, so re-read the metrics header on a new pin. Semantics and traps:
@@ -86,6 +105,15 @@ COMMIT_FILENAME = "image_commit.txt"
 
 # Per-centre ``;``-joined strings (design_ph.py:1859-1860); see per_centre_energies.
 PER_CENTRE_COLUMNS = ("dE_complex", "dE_apo")
+
+# How many centres get a numeric ``centre<k>_idx1`` column. Cap, not a limit on the
+# run: ``--centers-per-type`` defaults to 2 and multiplies by the number of token types
+# (his_p/his_s 1, acid_p 2, all_p 3), so 2/4/6 centres are the defaults and a raised
+# --centers-per-type reaches more. 12 covers --centers-per-type up to 12 for the two
+# His modes, 6 for acid_p and 4 for all_p, at one integer column each. Truncation is
+# NEVER silent: ``n_centres_idx1`` < ``n_centers`` and ``centres_idx1_basis`` says
+# 'truncated', and ``centers`` keeps every centre.
+MAX_CENTRE_COLUMNS = 12
 
 # Key csv.DictReader files surplus fields under; such a row is shifted, hence an error.
 OVERFLOW_KEY = "__overflow__"
@@ -149,6 +177,10 @@ RESERVED = {
     "n_redesign",
     "centers_seq_check",
     "centers_match_metrics",
+    # Numeric centre positions (idx1_columns); British 'centre', see the docstring.
+    *[f"centre{k}_idx1" for k in range(1, MAX_CENTRE_COLUMNS + 1)],
+    "n_centres_idx1",
+    "centres_idx1_basis",
     "dE_complex_centres",
     "dE_apo_centres",
     "ddE_centres",
@@ -718,9 +750,21 @@ def align_ext(
 _CENTER_LIST_KEYS = ("centers", "selected_centers", "chosen_centers", "pinned_centers")
 _CHAIN_KEYS = ("chain", "chain_id", "chain_name", "binder_chain", "asym_id")
 # Most explicit first; the matched key is reported in ``centers_resnum_key``.
-_RESNUM_KEYS = ("resnum", "res_num", "res_id", "resi", "residue", "seqpos", "position", "pos")
+# ``index``/``idx`` ride at the END so no existing match changes: _first returns the
+# first PRESENT key, so appending can only rescue an entry that matched nothing before.
+# Every member of _INDEX0_KEYS must appear here or the index0 branch is unreachable.
+_RESNUM_KEYS = (
+    "resnum", "res_num", "res_id", "resi", "residue", "seqpos", "position", "pos",
+    "index", "idx",
+)
 # Keys read as 0-based indices: only these get ``_index0`` and the sequence check.
 _INDEX0_KEYS = frozenset({"position", "pos", "seqpos", "index", "idx"})
+if not _INDEX0_KEYS <= set(_RESNUM_KEYS):  # not assert: -O would strip the guard
+    raise RuntimeError(
+        f"index0 key(s) {sorted(_INDEX0_KEYS - set(_RESNUM_KEYS))} are not in "
+        f"_RESNUM_KEYS, so _first can never match them and the index0 branch is "
+        f"unreachable: every centre would refuse with a misleading basis."
+    )
 # Keys that may carry the protonation TOKEN; only a full token (HIS-S, ASP) counts.
 _STATE_KEYS = ("token", "state", "target_state", "microstate", "residue_state", "aa")
 # One key, not aliases (a bare ``score`` could be anything); collected as the minimum.
@@ -798,11 +842,15 @@ class Centers(NamedTuple):
 
     ``checks`` is ``[(index0, letter, token)]`` for sequence-checking each centre;
     ``pairs`` is ``{(index0, token)}`` for cross-checking a metrics row's own cell.
+    ``idx1`` is ``([index0 + 1 | None, ...], basis)`` IN THE ORDER OF ``centers``, kept
+    OUT of ``columns`` because whether it may be written depends on the row (see
+    ``idx1_columns``): an error row must never carry a position.
     """
 
     columns: dict[str, Any]
     checks: list[tuple[int, str, str]]
     pairs: set[tuple[int, str]] | None = None
+    idx1: tuple[list[int | None], str] = ([], "unavailable")
 
 
 def _first(mapping: dict, keys: tuple[str, ...]) -> tuple[Any, str]:
@@ -869,6 +917,13 @@ def parse_centers(path: Path | None) -> Centers:
     checks: list[tuple[int, str, str]] = []
     pairs: set[tuple[int, str]] = set()
     pairs_complete = True
+    # One slot per entry, in the SAME order as the ``centers`` labels below, so
+    # centre<k>_idx1 and the k-th ';'-joined entry of atomiumph_centers can never
+    # disagree about which centre is centre<k>. None = this entry's number is not a
+    # 0-based index (so +1 would be a guess); any None makes the whole row refuse.
+    idx1_values: list[int | None] = []
+    # The FIRST reason an entry got no position, or None when every entry got one.
+    idx1_refusal: str | None = None
     if entries is not None:
         labels, resnum_keys = [], []
         placements: list[float] = []
@@ -888,6 +943,25 @@ def parse_centers(path: Path | None) -> Centers:
                 else:
                     # Inexpressible centre: the set is incomparable, so NA.
                     pairs_complete = False
+                # 1-BASED position = 0-based index + 1, and ONLY from an index0 key.
+                # Each refusal gets its OWN reason: "not_index0" standing in for three
+                # different causes sends a reader looking in the wrong place.
+                if not resnum_key:
+                    reason = "no_resnum_key"      # none of _RESNUM_KEYS in this entry
+                elif resnum_key not in _INDEX0_KEYS:
+                    reason = "not_index0"         # a residue NUMBER; +1 would be a guess
+                elif index is None or index < 0:
+                    # _as_index refuses a float (10.0) and anything non-integral, and a
+                    # negative index addresses nothing: both are a malformed number,
+                    # not a numbering convention.
+                    reason = "bad_index"
+                else:
+                    reason = None
+                if reason is None:
+                    idx1_values.append(index + 1)  # type: ignore[operator]
+                else:
+                    idx1_values.append(None)
+                    idx1_refusal = idx1_refusal or reason
                 if resnum_key:
                     # Label the numbering convention in the column.
                     resnum_keys.append(
@@ -903,6 +977,8 @@ def parse_centers(path: Path | None) -> Centers:
             else:
                 labels.append(str(entry))
                 pairs_complete = False
+                idx1_values.append(None)
+                idx1_refusal = idx1_refusal or "not_a_mapping"
         out["centers"] = ";".join(labels)
         out["n_centers"] = len(entries)
         out["centers_resnum_key"] = ",".join(sorted(set(resnum_keys)))
@@ -928,7 +1004,104 @@ def parse_centers(path: Path | None) -> Centers:
             if isinstance(value, list):
                 out["n_redesign"] = len(value)
                 break
-    return Centers(out, checks, pairs if (pairs and pairs_complete) else None)
+
+    if not idx1_values:
+        basis = "unavailable"
+    else:
+        basis = idx1_refusal or "index0+1"
+    return Centers(
+        out,
+        checks,
+        pairs if (pairs and pairs_complete) else None,
+        (idx1_values, basis),
+    )
+
+
+def idx1_columns(
+    centres: Centers, output_scope: str, binder_chains: str, seq_check: Any
+) -> dict[str, Any]:
+    """``centre<k>_idx1`` for this row, or NA with ``centres_idx1_basis`` saying why.
+
+    The positions another tool pins (``--centers '{atomiumph_centre1_idx1},...'``):
+    1-BASED along the DESIGNED SEQUENCE of this row (``atomiumph_sequence``), in the
+    order of the ``centers`` audit cell. There is no direction -- a position is not
+    better high or low.
+
+    A number is written only when all five hold, and ``centres_idx1_basis`` names the
+    first that did not:
+
+      ``unavailable``        centers.json was absent, unreadable or held no entries.
+      ``not_a_mapping``      a centre entry was not a JSON object at all.
+      ``no_resnum_key``      a centre entry carried none of the known number keys.
+      ``not_index0``         a centre's number came from a resnum/resi-style key, so
+                             it is a residue number and +1 would be a guess.
+      ``bad_index``          an index0 key whose value is not a non-negative integer
+                             (``10.0`` included: one float in a future upstream JSON
+                             must not read as a numbering-convention problem).
+      ``output_scope_<s>``   the run did not use ``--output-scope binder``, so the
+                             designed sequence is the WHOLE COMPLEX ('/'-joined) and
+                             the index is not a position along the binder chain. An
+                             empty scope (no sidecar) is ``output_scope_unknown``.
+      ``multi_binder_chain`` ``--binder-chains`` named MORE THAN ONE chain. The
+                             designed sequence is then their CONCATENATION WITH NO
+                             '/' separator, so ``check_centers_against_sequence``
+                             passes and an index into it is a position along no single
+                             chain -- while every consumer (hisbond's --binder-chain,
+                             atomium's --fixed-positions) counts along ONE. With
+                             chains A(40) and B(55), a centre in A at concatenated
+                             position 20 would land on residue 20 of B.
+      ``binder_chains_unknown``  the sidecar recorded no ``--binder-chains`` at all
+                             (an older leaf), so the one-chain premise is unchecked.
+      ``seq_unverified``     ``centers_seq_check`` is not True for this row, so
+                             nothing confirmed the designed sequence carries the
+                             centre's residue at that index.
+      ``seq_check_failed``   the designed sequence CONTRADICTED the centres, so the
+                             row is an error row (stamped by the caller, not here).
+      ``error_row``          this row is an error row for any other reason: no
+                             position is published on one.
+      ``truncated``          written, but only the first MAX_CENTRE_COLUMNS of them.
+      ``index0+1``           written, all of them.
+
+    ``n_centres_idx1`` is how many were written; it must equal ``n_centers``, and any
+    smaller value (0 included) means some centre has no column.
+    """
+    out: dict[str, Any] = {
+        f"centre{k}_idx1": pd.NA for k in range(1, MAX_CENTRE_COLUMNS + 1)
+    }
+    values, basis = centres.idx1
+    if basis != "index0+1":
+        # 0 of n is a measurement; nothing parsed at all is NA.
+        out["n_centres_idx1"] = 0 if values else pd.NA
+        out["centres_idx1_basis"] = basis
+        return out
+    scope = (output_scope or "").strip()
+    if scope != "binder":
+        out["n_centres_idx1"] = 0
+        out["centres_idx1_basis"] = f"output_scope_{scope or 'unknown'}"
+        return out
+    # _check_chains stores the list space-separated; accept commas too.
+    chains = [c for c in str(binder_chains or "").replace(",", " ").split() if c]
+    if not chains:
+        # NOT multi_binder_chain: telling a reader the run named more than one chain
+        # when it named none is a false diagnosis in the column whose job IS the
+        # diagnosis. An older leaf with no sidecar lands here.
+        out["n_centres_idx1"] = 0
+        out["centres_idx1_basis"] = "binder_chains_unknown"
+        return out
+    if len(chains) != 1:
+        out["n_centres_idx1"] = 0
+        out["centres_idx1_basis"] = "multi_binder_chain"
+        return out
+    if seq_check is not True:
+        out["n_centres_idx1"] = 0
+        out["centres_idx1_basis"] = "seq_unverified"
+        return out
+    for k, idx1 in enumerate(values[:MAX_CENTRE_COLUMNS], start=1):
+        out[f"centre{k}_idx1"] = idx1
+    written = min(len(values), MAX_CENTRE_COLUMNS)
+    out["n_centres_idx1"] = written
+    out["centres_idx1_basis"] = "index0+1" if written == len(values) else "truncated"
+    return out
 
 
 def check_centers_against_sequence(
@@ -1350,6 +1523,12 @@ def collect_atomiumph(ctx: CollectCtx) -> CollectEach:
             # NA, never False: an error row has not disagreed, it was just not checked.
             "centers_seq_check": pd.NA,
             "centers_match_metrics": pd.NA,
+            # Numeric centre positions: NA on every error row (see idx1_columns).
+            **{f"centre{k}_idx1": pd.NA for k in range(1, MAX_CENTRE_COLUMNS + 1)},
+            "n_centres_idx1": pd.NA,
+            # An explicit value, not "": an error row publishes no position, and a
+            # blank basis would be an eighth, undocumented reason.
+            "centres_idx1_basis": "error_row",
             # False = this stem's files are newer than the sidecar, i.e. normal.
             "output_predates_meta": False,
             "native_sequence": "",
@@ -1469,7 +1648,9 @@ def collect_atomiumph(ctx: CollectCtx) -> CollectEach:
                 {**base, "join_mode": join.mode,
                  "join_key": ",".join(join.keys),
                  "join_checked_fields": ",".join(join.checked),
-                 **centers.columns, "centers_seq_check": False},
+                 **centers.columns, "centers_seq_check": False,
+                 # The one failure that disproves the index base: say so in the basis.
+                 "centres_idx1_basis": "seq_check_failed"},
             )
             return
 
@@ -1564,6 +1745,15 @@ def collect_atomiumph(ctx: CollectCtx) -> CollectEach:
             data.update(per_centre[i].columns)
             data.update(centers.columns)
             data["centers_seq_check"] = seq_checks[i][0]
+            # After centers.columns and the seq check: idx1 is gated on both.
+            data.update(
+                idx1_columns(
+                    centers,
+                    run_columns["output_scope"],
+                    run_columns["binder_chains"],
+                    seq_checks[i][0],
+                )
+            )
             data["metrics_path"] = str(metrics_path)
             data["couplings_path"] = str(couplings) if couplings else ""
             data["header"] = header

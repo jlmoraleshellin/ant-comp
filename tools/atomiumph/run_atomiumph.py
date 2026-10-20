@@ -737,7 +737,10 @@ def add_run_atomiumph_args(parser: ArgumentParser) -> None:
         "his_p/his_s have one token type, acid_p two (Asp, Glu) and all_p three, so 2 "
         "here is 2, 4 or 6 centres respectively. Every extra centre scales the "
         "--redesign-scope coupling scan linearly and adds a value to the ;-joined "
-        "per-centre metrics cells.",
+        "per-centre metrics cells. Only the first 12 centres get an "
+        "atomiumph_centre<k>_idx1 position column; past that the count column "
+        "atomiumph_n_centres_idx1 falls below atomiumph_n_centers and "
+        "atomiumph_centres_idx1_basis reads 'truncated', so nothing is lost silently.",
     )
     parser.add_argument(
         "--placement-region",
@@ -904,7 +907,12 @@ def add_run_atomiumph_args(parser: ArgumentParser) -> None:
         choices=list(OUTPUT_SCOPES),
         help="'binder' (default) writes the binder sequence only; 'all' writes every "
         "chain joined by '/'. Leave it at 'binder' unless you know the downstream "
-        "consumer splits on '/'.",
+        "consumer splits on '/'. 'all' ALSO SUPPRESSES THE NUMERIC CENTRE POSITIONS: "
+        "atomiumph_centre<k>_idx1 is an index into the designed sequence, which under "
+        "'all' is the whole complex and not the binder chain, so the columns collect "
+        "as NA with atomiumph_centres_idx1_basis = 'output_scope_all' rather than as "
+        "a position on the wrong molecule. The packed atomiumph_centers audit cell is "
+        "written either way.",
     )
     parser.add_argument(
         "--designs-per-task",
