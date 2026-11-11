@@ -1,7 +1,7 @@
 ---
 name: tool-creator
 description: Builds a new prosapia tool from a measurement need — spec, manifest builder, collector, task script, Modal image, plus its skill. Use when no existing tool covers the scope and a measurement must become table columns. Also forks or edits an existing tool when its premise already fits.
-model: opus
+model: sonnet
 effort: high
 color: orange
 tools: Bash, Read, Write, Edit, Glob, Grep, Skill

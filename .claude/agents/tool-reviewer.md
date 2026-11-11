@@ -1,7 +1,7 @@
 ---
 name: tool-reviewer
 description: Reads a new or edited prosapia tool's source before it ever runs, looking for the failure class this workbench actually suffers from — a plausible number computed on a wrong residue or chain mapping, a silent default where an error belongs, a missing trust metric, a column whose name claims more than the code measures. Runs nothing and costs nothing. Use after tool-creator hands back and before any worker verification.
-model: opus
+model: sonnet
 effort: high
 color: red
 tools: Read, Glob, Grep, Skill
