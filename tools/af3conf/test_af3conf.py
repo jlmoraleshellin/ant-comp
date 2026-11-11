@@ -51,6 +51,7 @@ run_af3conf = _load("run_af3conf", HERE / "run_af3conf.py")
 collect_af3conf = _load("collect_af3conf", HERE / "collect_af3conf.py")
 BOLTZCONF_WORKER = HERE.parent / "boltzconf" / "boltzconf_worker.py"
 boltzconf_worker = _load("boltzconf_worker", BOLTZCONF_WORKER)
+collect_boltzconf = _load("collect_boltzconf", HERE.parent / "boltzconf" / "collect_boltzconf.py")
 
 from prosapia.core import CollectCtx, DesignCtx, ManifestCtx  # noqa: E402
 
@@ -212,7 +213,7 @@ def collect_one(tmp: Path, name: str, table_columns: dict | None = None) -> dict
     """The same design through the collector, as the driver would call it."""
     out_dir = tmp / f"out_{name}"
     out_dir.mkdir(parents=True, exist_ok=True)
-    # The collector derives the leaf from out_dir.name, so give it the real one.
+    # A flat leaf (no .submissions): the collector reads it as its only submission.
     leaf_dir = tmp / "collect" / "af3conf"
     if leaf_dir.exists():
         for p in leaf_dir.iterdir():
@@ -228,6 +229,8 @@ def collect_one(tmp: Path, name: str, table_columns: dict | None = None) -> dict
         df=df,
         args=Namespace(run_dir=tmp, table="table1", dir_label="", force=False),
         table_name="table1",
+        leaf="af3conf",
+        leaf_dir=leaf_dir,
         out_dir=leaf_dir,
         status_col="af3conf_status",
         path_col="af3conf_path",
@@ -262,6 +265,10 @@ def test_ipsae_source_identical_to_boltzconf():
     assert worker.IPSAE_D0_MIN == boltzconf_worker.IPSAE_D0_MIN
     assert worker.NUCLEIC_COMPS == boltzconf_worker.NUCLEIC_COMPS
     assert worker.IPSAE_PER_CHAIN_TEMPLATES == boltzconf_worker.IPSAE_PER_CHAIN_TEMPLATES
+    # The ipsae_min_* derivation lives in the collectors; same rule.
+    assert inspect.getsource(collect_af3conf.ipsae_min_columns) == inspect.getsource(
+        collect_boltzconf.ipsae_min_columns
+    ), "ipsae_min_columns drifted from boltzconf's copy"
 
 
 def test_ipsae_parity_same_matrix_same_output():
@@ -809,7 +816,9 @@ def test_shared_column_names_identical_to_boltzconf():
         "chain_pae_min_maxdiff", "chain_pae_min_margin", "binder_seq_match",
         "ranking_score",
     ]
-    assert set(collect_af3conf.RESULT_COLUMNS) == set(worker.TRUST_COLUMNS + worker.SCIENCE_COLUMNS)
+    written, derived = set(worker.TRUST_COLUMNS + worker.SCIENCE_COLUMNS), collect_af3conf.DERIVED_COLUMNS
+    assert derived == collect_boltzconf.DERIVED_COLUMNS and not written & set(derived)
+    assert set(collect_af3conf.RESULT_COLUMNS) - set(derived) == written
 
 
 # ---------------------------------------------------------------- manifest

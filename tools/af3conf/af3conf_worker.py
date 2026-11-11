@@ -134,6 +134,8 @@ IPSAE_PER_CHAIN_TEMPLATES = [
     "ipsae_nres_binder_{k}",     # binder residues with any sub-cutoff PAE to k
     "ipsae_nres_{k}",            # chain-k residues reached from the binder
 ]
+# Not written here: ipsae_min_{k} and ipsae_binder_min are derived by the collector from
+# ipsae_binder_to_{k} / ipsae_{k}_to_binder (ipsae_min_columns in collect_af3conf.py).
 
 
 class Args(argparse.Namespace):

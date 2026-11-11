@@ -18,7 +18,7 @@ The lineage walk is OFF by default: a prediction belongs to one sequence, so a c
 table would score its PARENT's prediction under its own name. An absent column raises
 unless ``--allow-lineage`` is given (``input_source`` and ``stem_matches_name`` then
 record what happened). A blank cell in a table that HAS the column never borrows an
-ancestor's file; since ``filter_ready`` drops such a row at collect, it KEEPS any
+ancestor's file; since ``clean_ready`` drops such a row at collect, it KEEPS any
 af3conf_* values it already had (a previous ``OK`` included), so gate filters on
 ``alphafold3_status == "OK"``.
 
@@ -29,9 +29,10 @@ sequence for that chain and cannot tell whether that chain is the binder.
 
 Labels: no ``_``-separated segment of ``-l`` may equal or start with a per-chain column
 stem (iptm, ipsae, ipae), because the collector resets per-chain columns by prefix and
-would blank a sibling leaf's. Before submitting, the builder deletes
-``<out_dir>/<name>.tsv`` for every design, so a killed task collects as ``missing``,
-never as the previous run's ``OK``.
+would blank a sibling leaf's. Every run writes into a fresh submission dir and lists
+its designs in ``af3conf_tasks/``; the collector answers a listed design from that
+submission alone, so a killed task collects as ``missing``, never as an older
+submission's ``OK``.
 """
 
 from argparse import ArgumentParser
@@ -84,10 +85,10 @@ def _resolve(
     back to an ancestor. The lineage is walked only when the column is ABSENT and
     ``--allow-lineage`` was given.
     """
-    if column in ctx.df.columns:
-        if name not in ctx.df.index:
+    if column in ctx.source_df.columns:
+        if name not in ctx.source_df.index:
             return None, "own table"
-        return _clean(ctx.df.at[name, column]), "own table"
+        return _clean(ctx.source_df.at[name, column]), "own table"
     if not allow_lineage:
         return None, "lineage (refused)"
     return _clean(ctx.lookup(name, column)), "lineage"
@@ -203,8 +204,8 @@ def build_af3conf_manifest(ctx: ManifestCtx[Af3confArgs]) -> list[tuple[str, ...
         raise ValueError("--ipsae-pae-cutoff must be > 0.")
     if ctx.args.designs_per_task < 1:
         raise ValueError("--designs-per-task must be >= 1.")
-    leaf = ctx.out_dir.name
-    label = leaf[len(TOOL_NAME) + 1 :] if leaf.startswith(f"{TOOL_NAME}_") else ""
+    leaf = ctx.leaf
+    label =leaf[len(TOOL_NAME) + 1 :] if leaf.startswith(f"{TOOL_NAME}_") else ""
     bad_segments = [
         s for s in label.split("_") if s.lower().startswith(RESERVED_LABEL_STEMS)
     ]
@@ -220,7 +221,7 @@ def build_af3conf_manifest(ctx: ManifestCtx[Af3confArgs]) -> list[tuple[str, ...
 
     column = ctx.args.input_column
     if column == NO_DEFAULT_COLUMN:
-        available = ", ".join(str(c) for c in ctx.df.columns if str(c).endswith("_path"))
+        available = ", ".join(str(c) for c in ctx.source_df.columns if str(c).endswith("_path"))
         raise ValueError(
             f"af3conf has no default input column: pass -i/--input-column with the "
             f"column holding AF3's PREDICTED STRUCTURE (alphafold3_path or "
@@ -229,13 +230,13 @@ def build_af3conf_manifest(ctx: ManifestCtx[Af3confArgs]) -> list[tuple[str, ...
         )
 
     # Not ctx.ready: it drops blank-input rows, which must become error rows.
-    ready = ctx.df
-    status_col = status_column(ctx.out_dir.name)
+    ready = ctx.source_df
+    status_col = status_column(ctx.leaf)
     if not ctx.args.force and status_col in ready.columns:
         ready = ready[ready[status_col] != "OK"]
 
-    if column not in ctx.df.columns and not ctx.args.allow_lineage:
-        available = ", ".join(str(c) for c in ctx.df.columns if str(c).endswith("_path"))
+    if column not in ctx.source_df.columns and not ctx.args.allow_lineage:
+        available = ", ".join(str(c) for c in ctx.source_df.columns if str(c).endswith("_path"))
         raise ValueError(
             f"table '{ctx.args.table}' has no column {column!r}. af3conf does NOT "
             f"walk the lineage by default: an AF3 prediction belongs to one "
@@ -248,7 +249,7 @@ def build_af3conf_manifest(ctx: ManifestCtx[Af3confArgs]) -> list[tuple[str, ...
     seq_column = ctx.args.sequence_column
     if (
         seq_column is not None
-        and seq_column not in ctx.df.columns
+        and seq_column not in ctx.source_df.columns
         and not ctx.args.allow_lineage
     ):
         raise ValueError(
@@ -262,8 +263,6 @@ def build_af3conf_manifest(ctx: ManifestCtx[Af3confArgs]) -> list[tuple[str, ...
     n_unresolved = 0
     for name in ready.index:
         name = cast(str, name)
-        # A stale result from an earlier run must not survive this submit.
-        (ctx.out_dir / f"{name}.tsv").unlink(missing_ok=True)
         raw, source = _resolve(ctx, name, column, ctx.args.allow_lineage)
         sequence = ""
         if seq_column is not None:
@@ -286,7 +285,7 @@ def build_af3conf_manifest(ctx: ManifestCtx[Af3confArgs]) -> list[tuple[str, ...
         print(
             f"af3conf: {n_unresolved}/{len(members)} design(s) could not resolve "
             f"{column}. Their tasks write 'error: could not resolve ...', but a row "
-            f"whose OWN {column} cell is blank is skipped by collect (filter_ready) "
+            f"whose OWN {column} cell is blank is skipped by collect (clean_ready) "
             f"and KEEPS whatever af3conf status it already had, including a stale "
             f"OK -- gate filters on alphafold3_status == 'OK'."
         )
@@ -297,7 +296,7 @@ def build_af3conf_manifest(ctx: ManifestCtx[Af3confArgs]) -> list[tuple[str, ...
             f"'{ctx.args.table}' and its ancestors). Check -i/--input-column."
         )
 
-    tasks_dir = ctx.out_dir / "af3conf_tasks"
+    tasks_dir = ctx.submission_dir / "af3conf_tasks"
     tasks_dir.mkdir(parents=True, exist_ok=True)
     per_task = ctx.args.designs_per_task
     manifest_rows: list[tuple[str, ...]] = []
