@@ -3,10 +3,13 @@
 The submitter symlinks each input as ``grp_<g>/inputs/<design_name>.pdb`` and
 ``design_ph.py`` names every output after that stem, so the stem IS the parent row::
 
-    <out_dir>/**/<stem>.metrics.csv, .fa, .ext.fa, .centers.json, .couplings.csv
+    <leaf>/.submissions/<NN>/**/<stem>.metrics.csv, .fa, .ext.fa, .centers.json,
+    .couplings.csv
 
-The search is a recursive glob (the layout under ``--out_folder`` is undocumented); a
-stem found in two places is an error, not a first match. ``summary.csv`` is ignored and
+The search is a recursive glob (the layout under ``--out_folder`` is undocumented) over
+every submission of the leaf, newest first, then over the leaf itself for a run_dir
+written before submission dirs; per stem the newest submission's files win, and a stem
+found twice INSIDE one of them is an error, not a first match. ``summary.csv`` is ignored and
 ``couplings.csv`` stays a file (``couplings_path``), not columns.
 
 THE JOIN IS THE RISK. Sequences come from ``<stem>.fa`` and numbers from
@@ -62,6 +65,7 @@ from typing import Any, Iterable, NamedTuple
 import pandas as pd
 
 from prosapia.core import Collected, CollectCtx, CollectEach, DesignCtx
+from prosapia.core.naming import SUBMISSIONS_DIRNAME, submission_dirs
 
 # Sidecar written by the run (see run_atomiumph.py); the chains are run-wide.
 META_FILENAME = ".meta.json"
@@ -211,17 +215,22 @@ EXPECTED_COLLISIONS = {"name", "centers", "apo_weight"}
 # --- file discovery ---
 
 
-def index_outputs(out_dir: Path) -> dict[str, dict[str, list[Path]]]:
+def index_outputs(
+    out_dir: Path, skip: tuple[str, ...] = ()
+) -> dict[str, dict[str, list[Path]]]:
     """Map ``stem -> kind -> [paths]`` for every design_ph output under ``out_dir``.
 
     Recursive (the layout under ``--out_folder`` is undocumented), and lists so an
-    ambiguous stem can be reported instead of resolved by luck.
+    ambiguous stem can be reported instead of resolved by luck. ``skip`` names further
+    directories to walk past: a legacy flat leaf is indexed with
+    ``skip=(SUBMISSIONS_DIRNAME,)`` so a submission's output is not read as the leaf's.
     """
     index: dict[str, dict[str, list[Path]]] = {}
     for path in sorted(out_dir.rglob("*")):
         if not path.is_file():
             continue
-        if any(part in SKIP_DIRS for part in path.relative_to(out_dir).parts[:-1]):
+        parts = path.relative_to(out_dir).parts[:-1]
+        if any(part in SKIP_DIRS or part in skip for part in parts):
             continue
         name = path.name
         for kind, suffix in SUFFIXES:
@@ -233,7 +242,8 @@ def index_outputs(out_dir: Path) -> dict[str, dict[str, list[Path]]]:
 
 
 def commit_for(path: Path, out_dir: Path) -> str:
-    """The image commit recorded beside this output, walking up to ``out_dir``."""
+    """The image commit recorded beside this output, walking up to ``out_dir`` (the
+    leaf: an output may sit in a submission dir or, on an old leaf, directly under it)."""
     here = path.parent
     while True:
         marker = here / COMMIT_FILENAME
@@ -1349,7 +1359,11 @@ def _num_or_na(value: Any) -> Any:
 
 
 def read_meta(out_dir: Path) -> dict:
-    """The run's sidecar, or ``{}`` for a run_dir written without one."""
+    """The leaf's sidecar, or ``{}`` for a run_dir written without one.
+
+    It lives at the LEAF, not in a submission dir: the driver writes it once per run
+    and collect stamps every submission's rows from it.
+    """
     path = out_dir / META_FILENAME
     if not path.is_file():
         return {}
@@ -1374,7 +1388,7 @@ def noise_and_lam_from_tasks(out_dir: Path) -> tuple[str, str]:
     """
     noises: set[str] = set()
     lams: set[str] = set()
-    for task_file in sorted((out_dir / "atomiumph_tasks").glob("task_*.tsv")):
+    for task_file in task_files(out_dir):
         try:
             text = task_file.read_text()
         except OSError:
@@ -1397,15 +1411,22 @@ def noise_and_lam_from_tasks(out_dir: Path) -> tuple[str, str]:
     return noise, lam
 
 
+def task_files(leaf_dir: Path) -> list[Path]:
+    """Every submission's sub-manifests, newest submission first, then a flat leaf's."""
+    subs = submission_dirs(leaf_dir)
+    dirs = subs + ([leaf_dir] if subs[-1] != leaf_dir else [])
+    return [f for d in dirs for f in sorted((d / "atomiumph_tasks").glob("task_*.tsv"))]
+
+
 def run_params_from_tasks(out_dir: Path) -> dict[str, str]:
     """Run parameters recoverable from the sub-manifests, ``{column: value}``.
 
     For leaves whose ``.meta.json`` predates a key. A value not identical across every
-    row is omitted, never defaulted: an absent key must read as NA.
+    row -- of every submission -- is omitted, never defaulted: an absent key reads as NA.
     """
     found: dict[str, set[str]] = {k: set() for k in _TAIL_FLAGS}
     lams: set[str] = set()
-    for task_file in sorted((out_dir / "atomiumph_tasks").glob("task_*.tsv")):
+    for task_file in task_files(out_dir):
         try:
             text = task_file.read_text()
         except OSError:
@@ -1438,8 +1459,21 @@ def _error_row(parent: str, message: str, data: dict[str, Any]) -> Collected:
 
 def collect_atomiumph(ctx: CollectCtx) -> CollectEach:
     """Per-parent collector: one child row ``<parent>_p<i>`` per designed sequence."""
-    index = index_outputs(ctx.out_dir)
-    meta = read_meta(ctx.out_dir)
+    # Leaf-wide, newest submission first: per stem the newest submission's files win,
+    # which is the rule by_design applies per design. A create tool keys its output by
+    # stem, so a submission's task list is not needed to tell the two apart.
+    subs = submission_dirs(ctx.leaf_dir)
+    index: dict[str, dict[str, list[Path]]] = {}
+    for sub in subs:
+        for stem, kinds in index_outputs(sub).items():
+            index.setdefault(stem, kinds)
+    if subs[-1] != ctx.leaf_dir:
+        # A leaf written before submission dirs: its own output is older than every one.
+        for stem, kinds in index_outputs(
+            ctx.leaf_dir, skip=(SUBMISSIONS_DIRNAME,)
+        ).items():
+            index.setdefault(stem, kinds)
+    meta = read_meta(ctx.leaf_dir)
     expected = meta.get(EXPECTED_KEY)
     expected = expected if isinstance(expected, int) else pd.NA
     # --binder-alone: no target in the graph; absent (older leaves) means False.
@@ -1461,7 +1495,7 @@ def collect_atomiumph(ctx: CollectCtx) -> CollectEach:
         "charge_prior": str(meta.get(CHARGE_PRIOR_KEY, "") or ""),
     }
     if not all(sidecar.values()):
-        from_tasks = run_params_from_tasks(ctx.out_dir)
+        from_tasks = run_params_from_tasks(ctx.leaf_dir)
         for key, value in sidecar.items():
             sidecar[key] = value or from_tasks.get(key, "")
     run_columns.update(sidecar)
@@ -1470,7 +1504,7 @@ def collect_atomiumph(ctx: CollectCtx) -> CollectEach:
 
     # Advisory only: mtimes are unsound (partial reruns, copies); submit is the guard.
     meta_mtime = 0.0
-    meta_path = ctx.out_dir / META_FILENAME
+    meta_path = ctx.leaf_dir / META_FILENAME
     if meta_path.is_file():
         try:
             meta_mtime = meta_path.stat().st_mtime
@@ -1492,8 +1526,9 @@ def collect_atomiumph(ctx: CollectCtx) -> CollectEach:
         return sorted(out)
 
     # Batch mode does not abort on a per-structure failure: report the count once.
+    # The driver calls this per submission and the index is leaf-wide: report once.
     absent = [str(n) for n in ctx.ready.index if str(n) not in index]
-    if absent:
+    if absent and ctx.out_dir == subs[0]:
         shown = ", ".join(absent[:20]) + (" …" if len(absent) > 20 else "")
         print(
             f"atomiumph: {len(absent)} of {len(ctx.ready.index)} parent(s) produced no "
@@ -1566,14 +1601,14 @@ def collect_atomiumph(ctx: CollectCtx) -> CollectEach:
             missing = ".metrics.csv" if metrics_path is None else ".fa"
             # Any file of the stem anchors the image_commit.txt walk, if there is one.
             anchor = next((p for paths in files.values() for p in paths), None)
-            base["image_commit"] = commit_for(anchor, ctx.out_dir) if anchor else ""
+            base["image_commit"] = commit_for(anchor, ctx.leaf_dir) if anchor else ""
             yield _error_row(
                 d.name, f"incomplete output: {d.name}{missing} is absent",
                 {**base, "join_mode": "failed"},
             )
             return
 
-        base["image_commit"] = commit_for(metrics_path, ctx.out_dir)
+        base["image_commit"] = commit_for(metrics_path, ctx.leaf_dir)
         columns, rows, n_overflow = read_metrics(metrics_path)
         # The stem is the parent name, and design_ph writes the echo as <stem>_native.
         all_entries = parse_fasta(fasta_path)

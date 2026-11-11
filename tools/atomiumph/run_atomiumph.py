@@ -18,10 +18,12 @@ interface``, ``--set`` of ``--placement_metric``/``--coupling_metric`` ``ddE``, 
 structure holding any chain but the binder, and flipping the flag in a leaf that holds
 output. ``--apo-weight`` and ``--charge-prior`` are sent, and recorded, as 0.0.
 
-Re-submits: ``_check_no_stale_outputs`` refuses a submit that would leave old output in
-the leaf, so retry failed parents with the whole same filter under the same label. The
-driver writes the sidecar before this builder runs, so even a refused submit moves its
-mtime (``atomiumph_output_predates_meta``); ``ctx.write_meta`` is therefore the
+Re-submits: every run writes into its own ``<leaf>/.submissions/<NN>/``, but the
+sidecar and the guards stay LEAF-wide (collect stamps every submission's output from
+that one sidecar), so ``_check_no_stale_outputs`` still refuses a submit that would
+leave output the submit does not regenerate -- a retry of a failed subset needs a new
+``-l``. The driver writes the sidecar before this builder runs, so even a refused submit
+moves its mtime (``atomiumph_output_predates_meta``); ``ctx.write_meta`` is therefore the
 builder's last statement.
 
 Batching mirrors ``tools/atomium``: one ``design_ph.py --pdb_dir`` call per subgroup of
@@ -37,6 +39,7 @@ from typing import cast
 
 from prosapia.core import CommonArgs, ManifestCtx
 from prosapia.core.executors import volume_path
+from prosapia.core.naming import SUBMISSIONS_DIRNAME
 from prosapia.utils import ensure_pdb, expand_chain_spec
 
 # The four 30-class pH checkpoints design_ph.py accepts (atomium's are 21-class).
@@ -474,6 +477,20 @@ _OUTPUT_SUFFIXES = (".metrics.csv", ".couplings.csv", ".centers.json", ".ext.fa"
 _SKIP_DIRS = ("atomiumph_logs", "atomiumph_tasks", "inputs")
 
 
+def _leaf_dir(submission_dir: Path) -> Path:
+    """The leaf that owns a submission dir (``<leaf>/.submissions/<NN>``).
+
+    The sidecar and both stale-output guards are leaf-wide, so they must not be
+    resolved against one submission.
+    """
+    if submission_dir.parent.name != SUBMISSIONS_DIRNAME:
+        raise ValueError(
+            f"{submission_dir} is not a <leaf>/{SUBMISSIONS_DIRNAME}/<NN> submission "
+            f"dir: the leaf-wide stale-output guards cannot be resolved."
+        )
+    return submission_dir.parent.parent
+
+
 def _output_stems(out_dir: Path) -> set[str]:
     """Every design_ph output stem already in the leaf (one recursive walk).
 
@@ -617,23 +634,24 @@ def build_atomiumph_manifest(ctx: ManifestCtx[AtomiumphArgs]) -> list[tuple[str,
             chunks.append((sig, members[i : i + x]))
     tasks = _pack_subgroups(chunks, x)
 
-    # Once, leaf-wide, before any grp_<g> dir is created or symlink moved.
-    existing_stems = _output_stems(ctx.out_dir)
-    _check_binder_alone_unchanged(ctx.out_dir, existing_stems, ctx.args.binder_alone)
+    # Once, leaf-wide (every submission included), before any grp_<g> dir is created.
+    leaf_dir = _leaf_dir(ctx.submission_dir)
+    existing_stems = _output_stems(leaf_dir)
+    _check_binder_alone_unchanged(leaf_dir, existing_stems, ctx.args.binder_alone)
     _check_no_stale_outputs(
-        ctx.out_dir,
+        leaf_dir,
         existing_stems,
         {name for members in groups.values() for name, _ in members},
     )
 
-    tasks_dir = ctx.out_dir / "atomiumph_tasks"
+    tasks_dir = ctx.submission_dir / "atomiumph_tasks"
     tasks_dir.mkdir(parents=True, exist_ok=True)
     manifest_rows: list[tuple[str, ...]] = []
     gid = 0
     for t, subgroups in enumerate(tasks):
         sub_rows: list[tuple[str, ...]] = []
         for (binder_sig, target_sig), members in subgroups:
-            grp_dir = ctx.out_dir / f"grp_{gid}"
+            grp_dir = ctx.submission_dir / f"grp_{gid}"
             inputs_dir = grp_dir / "inputs"
             inputs_dir.mkdir(parents=True, exist_ok=True)
             _stage_inputs(inputs_dir, members)
